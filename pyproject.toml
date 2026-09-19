@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "physical-ai-governor"
+version = "1.0.0"
+description = "Autonomous Physical AI, Humanoid (GR00T) & Drone Swarm GRC Assurance Engine"
+authors = [{ name = "Ahmed Hassan", email = "ahmed@a2z-soc.io" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = [
+    "physical-ai",
+    "humanoid-robotics",
+    "drone-fleet-governance",
+    "control-barrier-functions",
+    "mavlink",
+    "ros2",
+    "robot-safety",
+    "faa-part-89",
+    "eu-ai-act-annex-iii",
+    "black-box-telemetry",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/AAH20/physical-ai-governor"
+Repository = "https://github.com/AAH20/physical-ai-governor"
+Documentation = "https://github.com/AAH20/physical-ai-governor#readme"
