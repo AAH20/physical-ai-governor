@@ -29,6 +29,12 @@ from .mavlink_frame import (
 )
 from .merkle_blackbox import CompliancePassport, MerkleBlackBoxLedger
 from .qp_solver import ActiveSetQPSolver, QPSolution
+from .rbb_contract import (
+    compute_rbb_digest,
+    validate_rbb_event,
+)
+from .rbb_recorder import RobotBlackBoxRecorder
+from .rbb_verifier import RBBVerificationReport, RobotBlackBoxVerifier
 from .ros2_bridge import ROS2JointState, ROS2TelemetryBridge, ROS2Twist
 from .safety_state_machine import (
     ISO10218SafetyStateMachine,
@@ -89,11 +95,16 @@ __all__ = [
     "StatutoryAssuranceEngine",
     "RemoteIDLocationPayload",
     "ISO15066_BIOMECHANICAL_LIMITS_N",
-    # GRC_Claw Bridge
+    # GRC_Claw & Robot Black Box (RBB) Integration
     "GRCClawBridge",
     "GRCClawEvidenceRecord",
     "canonical_json",
     "compute_canonical_digest",
+    "RobotBlackBoxRecorder",
+    "RobotBlackBoxVerifier",
+    "RBBVerificationReport",
+    "validate_rbb_event",
+    "compute_rbb_digest",
     # Hardware TPM & ZK
     "TPM2HardwareAttestor",
     "TPMQuote",

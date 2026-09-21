@@ -272,6 +272,78 @@ def cmd_swarm_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rbb_record(args: argparse.Namespace) -> int:
+    """Records real-time physical AI telemetry into an RBB bundle."""
+    from .rbb_recorder import RobotBlackBoxRecorder
+
+    print(f"📼 Recording Physical AI Black Box flight log ({args.cycles} cycles)...")
+    ingestor = TelemetryIngestor()
+    cbf = ControlBarrierFilter()
+    recorder = RobotBlackBoxRecorder(robot_id=args.robot_id, tenant_ref=args.tenant_ref)
+    recorder.start_run(task="benign_block_handover")
+
+    for i in range(args.cycles):
+        cmd_torque = [40.0, -30.0] if (i % 7 != 0) else [180.0, -210.0]
+        dist = 2.5 if (i % 5 != 0) else 1.2
+        pkt = ingestor.parse_humanoid_joint_state(
+            robot_id=args.robot_id,
+            timestamp_ns=i * 1_000_000,
+            base_pos=(0.0, 0.0, 1.2),
+            base_vel=(0.2, 0.0, 0.0),
+            current_torques=[30.0, -20.0],
+            commanded_torques=cmd_torque,
+            human_proximity=dist,
+            battery=95.0 - (i * 0.01),
+        )
+        dec = cbf.evaluate_safety(pkt)
+        recorder.record_safety_cycle(pkt, dec)
+
+    recorder.close_run()
+    result = recorder.export_bundle(args.out)
+
+    print("=" * 65)
+    print("  ROBOT BLACK BOX (RBB) BUNDLE RECORDED")
+    print("=" * 65)
+    print(f"  Run ID:                      {result['run_id']}")
+    print(f"  Bundle Directory:            {result['bundle_path']}")
+    print(f"  Total Events:                {result['total_events']}")
+    print(f"  Head Digest:                 {result['head_digest'][:16]}...")
+    print(f"  Events Digest:               {result['events_digest'][:16]}...")
+    print(f"  Checkpoints Digest:          {result['checkpoints_digest'][:16]}...")
+    print("=" * 65)
+    return 0
+
+
+def cmd_rbb_verify(args: argparse.Namespace) -> int:
+    """Audits and cryptographically verifies an on-disk RBB bundle."""
+    from .rbb_verifier import RobotBlackBoxVerifier
+
+    print(f"🔍 Verifying Robot Black Box bundle at: {args.bundle}")
+    report = RobotBlackBoxVerifier.verify_bundle(args.bundle)
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print("=" * 65)
+        print("  ROBOT BLACK BOX (RBB) BUNDLE AUDIT REPORT")
+        print("=" * 65)
+        print(f"  Bundle Status:               {'VALID (PASSED)' if report.is_valid else 'INVALID (FAILED)'}")
+        print(f"  Run ID:                      {report.run_id}")
+        print(f"  Events Verified:             {report.total_events}")
+        print(f"  Checkpoints Verified:        {report.total_checkpoints}")
+        print(f"  Head Digest:                 {report.head_digest[:16]}...")
+        print(f"  Events Digest:               {report.events_digest[:16]}...")
+        print("  Checks Passed:")
+        for chk in report.checks_passed:
+            print(f"    • {chk}")
+        if report.errors:
+            print("  Errors Detected:")
+            for err in report.errors:
+                print(f"    ❌ {err}")
+        print("=" * 65)
+    return 0 if report.is_valid else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="physical-ai-governor",
@@ -316,6 +388,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_claw.add_argument("--cycles", type=int, default=100, help="Telemetry cycles to audit")
     p_claw.add_argument("--output", "-o", type=str, default=None, help="Output bundle file path")
     p_claw.set_defaults(func=cmd_grc_claw_sync)
+
+    # rbb-record
+    p_rec = subparsers.add_parser("rbb-record", help="Record physical AI telemetry into an RBB bundle")
+    p_rec.add_argument("--robot-id", type=str, default="humanoid_gr00t_01", help="Robot identifier")
+    p_rec.add_argument("--tenant-ref", type=str, default="tenant-factory-a", help="Tenant reference")
+    p_rec.add_argument("--cycles", type=int, default=20, help="Number of telemetry cycles")
+    p_rec.add_argument("--out", "-o", type=str, required=True, help="Output directory for RBB bundle")
+    p_rec.set_defaults(func=cmd_rbb_record)
+
+    # rbb-verify
+    p_ver = subparsers.add_parser("rbb-verify", help="Audit and verify an on-disk RBB bundle")
+    p_ver.add_argument("--bundle", "-b", type=str, required=True, help="Path to RBB bundle directory")
+    p_ver.add_argument("--json", action="store_true", help="Output verification report in raw JSON")
+    p_ver.set_defaults(func=cmd_rbb_verify)
 
     # zk-prove
     p_zk = subparsers.add_parser("zk-prove", help="Generate Zero-Knowledge safety invariance proof")

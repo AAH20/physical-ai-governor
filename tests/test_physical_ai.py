@@ -17,6 +17,7 @@ Verifies:
 
 import io
 import json
+import pathlib
 import unittest
 from unittest.mock import patch
 
@@ -503,6 +504,85 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         self.assertFalse(decision.is_safe)
         self.assertEqual(diag["level"], 1)
         self.assertEqual(len(leaf), 64)
+
+    def test_rbb_canonical_serialization_and_validation(self) -> None:
+        """Verifies RFC 8785 canonical JSON serialization and RBB event schema validation."""
+        import tempfile
+        from physical_ai_governor.rbb_contract import (
+            canonical_json,
+            compute_rbb_digest,
+            validate_rbb_event,
+        )
+
+        obj = {"z": 1, "a": [2, 1], "nested": {"b": True, "a": None}}
+        canon = canonical_json(obj)
+        self.assertEqual(canon, '{"a":[2,1],"nested":{"a":null,"b":true},"z":1}')
+        digest = compute_rbb_digest(obj)
+        self.assertEqual(len(digest), 64)
+
+        # Non-finite floats rejected
+        with self.assertRaises(ValueError):
+            canonical_json({"inf": float("inf")})
+
+    def test_rbb_recorder_and_verifier_bundle_integrity(self) -> None:
+        """Verifies full recording of telemetry cycles into an RBB bundle and offline verification."""
+        import tempfile
+        from physical_ai_governor.rbb_recorder import RobotBlackBoxRecorder
+        from physical_ai_governor.rbb_verifier import RobotBlackBoxVerifier
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/test_rbb_bundle"
+            recorder = RobotBlackBoxRecorder(robot_id="humanoid_alpha", tenant_ref="tenant-test")
+            recorder.start_run(task="benign_block_handover")
+
+            for i in range(4):
+                pkt = self.ingestor.parse_humanoid_joint_state(
+                    robot_id="humanoid_alpha",
+                    timestamp_ns=i * 1_000_000,
+                    base_pos=(0.0, 0.0, 1.2),
+                    base_vel=(0.1, 0.0, 0.0),
+                    current_torques=[20.0, -15.0],
+                    commanded_torques=[30.0, -25.0] if i < 3 else [190.0, -210.0],
+                    human_proximity=2.5 if i < 3 else 1.2,
+                    battery=95.0,
+                )
+                dec = self.filter.evaluate_safety(pkt)
+                recorder.record_safety_cycle(pkt, dec)
+
+            recorder.close_run()
+            res = recorder.export_bundle(bundle_dir)
+
+            self.assertEqual(res["run_id"], recorder.run_id)
+            self.assertGreater(res["total_events"], 10)
+
+            # Audit valid bundle
+            report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            self.assertTrue(report.is_valid, f"Expected valid bundle, got errors: {report.errors}")
+            self.assertEqual(report.total_events, res["total_events"])
+            self.assertIn("events_cryptographic_hash_chain_valid", report.checks_passed)
+            self.assertIn("witness_consensus_head_verified", report.checks_passed)
+
+            # Test detection of tampered bundle (flip a byte in events.ndjson)
+            events_file = pathlib.Path(bundle_dir) / "events.ndjson"
+            raw = events_file.read_bytes()
+            events_file.write_bytes(raw[:-10] + b"tampered!!\n")
+
+            tampered_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            self.assertFalse(tampered_report.is_valid)
+            self.assertGreater(len(tampered_report.errors), 0)
+
+    def test_rbb_cli_commands(self) -> None:
+        """Verifies RBB CLI recording and offline verification commands."""
+        import tempfile
+        from physical_ai_governor.cli import main
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/cli_rbb_bundle"
+            ret_rec = main(["rbb-record", "--robot-id", "humanoid_cli", "--cycles", "3", "--out", bundle_dir])
+            self.assertEqual(ret_rec, 0)
+
+            ret_ver = main(["rbb-verify", "--bundle", bundle_dir, "--json"])
+            self.assertEqual(ret_ver, 0)
 
 
 if __name__ == "__main__":
