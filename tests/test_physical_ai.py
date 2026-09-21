@@ -301,6 +301,116 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         ret_rid = main(["remote-id", "--speed", "4.5"])
         self.assertEqual(ret_rid, 0)
 
+        ret_claw = main(["grc-claw-sync", "--cycles", "5"])
+        self.assertEqual(ret_claw, 0)
+
+    def test_grc_claw_canonical_and_evidence_packaging(self) -> None:
+        """Verifies RFC 8785 canonical digest and GRC_Claw EvidenceStore packaging."""
+        from physical_ai_governor.grc_claw_bridge import (
+            GRCClawBridge,
+            canonical_json,
+            compute_canonical_digest,
+        )
+
+        d = {"z": 10, "a": [3, 2, 1], "nested": {"b": True, "a": None}}
+        canon = canonical_json(d)
+        self.assertEqual(canon, '{"a":[3,2,1],"nested":{"a":null,"b":true},"z":10}')
+        digest = compute_canonical_digest(d)
+        self.assertEqual(len(digest), 64)
+
+        bridge = GRCClawBridge(gateway_url="http://127.0.0.1:18791", tenant_id=42)
+        passport = self.blackbox.issue_compliance_passport("humanoid_01", total_interventions=1)
+        evidence = bridge.build_evidence_record(passport)
+
+        self.assertEqual(evidence.tenantId, 42)
+        self.assertIn("rbb://humanoid_01/passport/", evidence.uri)
+        self.assertEqual(len(evidence.sha256), 64)
+
+        iso42001 = bridge.assess_iso42001_readiness(passport)
+        self.assertEqual(iso42001["overall_iso42001_readiness"], "CERTIFIED_ASSURED")
+
+        # Offline sync returns OFFLINE_QUEUED or ONLINE_SYNC_SUCCESS
+        res = bridge.sync_to_gateway(evidence)
+        self.assertIn(res["status"], ["OFFLINE_QUEUED", "ONLINE_SYNC_SUCCESS"])
+
+    def test_grc_claw_rbb_event_stream(self) -> None:
+        """Verifies real-time event stream translation into robot-black-box-contract events."""
+        from physical_ai_governor.grc_claw_bridge import GRCClawBridge
+
+        bridge = GRCClawBridge()
+        pkt = self.ingestor.parse_humanoid_joint_state(
+            "gr00t_01", 1000, (0, 0, 1.2), (0.2, 0, 0), [30], [180], 1.2, 95
+        )
+        dec = self.filter.evaluate_safety(pkt)
+        stream_payload = bridge.format_rbb_event_stream(pkt, dec, sequence=5)
+
+        self.assertEqual(stream_payload["schema_version"], "1.0.0-local.1")
+        self.assertEqual(stream_payload["sequence"], 5)
+        self.assertEqual(len(stream_payload["events"]), 4)
+        event_types = [e["event_type"] for e in stream_payload["events"]]
+        self.assertIn("observation.recorded", event_types)
+        self.assertIn("proposal.recorded", event_types)
+        self.assertIn("approval.recorded", event_types)
+        self.assertIn("execution.observed", event_types)
+
+    def test_iso10218_safety_state_machine(self) -> None:
+        """Verifies collaborative speed reduction, protective stop, and emergency stop."""
+        from physical_ai_governor.safety_state_machine import (
+            ISO10218SafetyStateMachine,
+            RobotSafetyState,
+        )
+
+        sm = ISO10218SafetyStateMachine(
+            stop_distance_m=0.5,
+            collaborative_distance_m=1.5,
+            max_collaborative_speed_mps=0.25,
+        )
+
+        # 1. Normal state (distance 3.0m)
+        pkt_normal = self.ingestor.parse_humanoid_joint_state("r1", 100, (0, 0, 1), (0.1, 0, 0), [10], [50.0], 3.0, 90)
+        state, torques = sm.update(pkt_normal)
+        self.assertEqual(state, RobotSafetyState.NORMAL_AUTONOMOUS)
+        self.assertEqual(torques, [50.0])
+
+        # 2. Collaborative zone (distance 1.2m, speed 0.5m/s -> clamped)
+        pkt_collab = self.ingestor.parse_humanoid_joint_state("r1", 200, (0, 0, 1), (0.5, 0, 0), [10], [50.0], 1.2, 90)
+        state, torques = sm.update(pkt_collab)
+        self.assertEqual(state, RobotSafetyState.REDUCED_SPEED_COLLABORATIVE)
+        self.assertLess(torques[0], 50.0)
+
+        # 3. Protective Stop zone (distance 0.3m -> zero torque)
+        pkt_stop = self.ingestor.parse_humanoid_joint_state("r1", 300, (0, 0, 1), (0, 0, 0), [10], [50.0], 0.3, 90)
+        state, torques = sm.update(pkt_stop)
+        self.assertEqual(state, RobotSafetyState.PROTECTIVE_STOP)
+        self.assertEqual(torques, [0.0])
+
+        # 4. Emergency Stop
+        sm.trigger_emergency_stop("Hardware Fault")
+        self.assertEqual(sm.current_state, RobotSafetyState.EMERGENCY_STOP)
+        self.assertEqual(len(sm.transitions), 3)
+
+    def test_telemetry_stream_server_processing(self) -> None:
+        """Verifies high-frequency in-memory stream processing and ledger notarization."""
+        from physical_ai_governor.telemetry_stream import TelemetryStreamServer
+
+        server = TelemetryStreamServer()
+        req_json = json.dumps({
+            "robot_id": "stream_robot",
+            "timestamp_ns": 1000,
+            "position_xyz": [0, 0, 1],
+            "velocity_xyz": [0, 0, 0],
+            "joint_torques": [10],
+            "human_distance_meters": 2.0,
+            "battery_percentage": 95,
+            "command_torque_input": [190.0],
+        })
+
+        res = server.process_telemetry_json(req_json)
+        self.assertTrue(res["intervention_triggered"])
+        self.assertEqual(res["filtered_command"], [150.0])
+        self.assertEqual(len(res["leaf_hash"]), 64)
+        self.assertEqual(server.total_processed_packets, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,48 +3,126 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://python.org)
 [![Dependencies: Zero](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-blueviolet.svg)](#-key-highlights)
-[![Tests: 15/15 Passing](https://img.shields.io/badge/Tests-15%2F15%20Passing-success.svg)](#-benchmark-verification)
+[![Tests: 19/19 Passing](https://img.shields.io/badge/Tests-19%2F19%20Passing-success.svg)](#-benchmark-verification)
 [![Chassis: GRC Claw](https://img.shields.io/badge/Chassis-GRC%20Claw%20(ISO%2042001)-orange.svg)](https://github.com/AAH20/GRC_Claw)
 [![Assurance Hub: A2Z SOC](https://img.shields.io/badge/Assurance-A2Z%20SOC%20Physical%20AI-informational.svg)](https://a2zsoc.com/physical-ai-humanoid-assurance)
 
 > **Autonomous Physical AI, Humanoid (GR00T) & Drone Swarm GRC Assurance Engine.**  
-> Enforces continuous Control Barrier Functions (CBF, QP-CBF, HOCBF) over streaming ROS 2, MAVLink, and VLA joint trajectories, notarizing tamper-evident black-box Merkle ledgers with inclusion proofs and statutory compliance passports for FAA Part 89, EU AI Act Annex III, and ISO 10218 / ISO/TS 15066.
+> Enforces continuous Control Barrier Functions (CBF, QP-CBF, HOCBF) over streaming ROS 2, MAVLink, and VLA joint trajectories, notarizing tamper-evident black-box Merkle ledgers with inclusion proofs and statutory compliance passports for FAA Part 89, EU AI Act Annex III, ISO 10218 / ISO/TS 15066, and **GRC_Claw** (ISO 42001).
 
 ---
 
 ## 🏛️ System Architecture
 
+```mermaid
+flowchart TD
+  subgraph FLEET["🤖 Physical AI Fleets & Foundation Models"]
+    direction LR
+    H1["Humanoid Robots<br/>(NVIDIA GR00T / Unitree / Optimus)"]
+    DR["Drone Swarms<br/>(PX4 / ArduPilot MAVLink)"]
+    VLA["VLA Action Chunks<br/>(OpenVLA / Octo / RT-2)"]
+  end
+
+  subgraph INGEST["⚡ Ingestion & Protocol Stream Plane"]
+    direction TB
+    ING["TelemetryIngestor<br/>(ROS 2 / MAVLink / VLA)"]
+    MFP["MAVLinkFrameParser<br/>(Binary v2 + CRC-16 Checksum)"]
+    VAV["VLAActionHorizonValidator<br/>(Multi-Step H=8..16 Screening)"]
+    TSS["TelemetryStreamServer<br/>(Async TCP & In-Memory Stream)"]
+  end
+
+  subgraph SAFETY["🛡️ Control Barrier & Optimization Core"]
+    direction TB
+    QP["ActiveSetQPSolver<br/>(Pure Python Convex Solver &lt;1ms)"]
+    QPF["QPSafetyFilter<br/>(Minimal-Norm Projection min ||u - u_nom||²)"]
+    HOCBF["HighOrderControlBarrierFilter<br/>(Relative Degree r=2 Deceleration)"]
+    STAB["HumanoidStabilityGovernor<br/>(ZMP Polygon &amp; Coulomb Friction Cone)"]
+    SM["ISO10218SafetyStateMachine<br/>(Collaborative / Protective / E-Stop)"]
+  end
+
+  subgraph AUDIT["📜 Cryptographic Notary & Forensic Audit"]
+    direction TB
+    MBL["MerkleBlackBoxLedger<br/>(Incremental Binary Merkle Tree)"]
+    PRF["Merkle Inclusion Proofs<br/>(Logarithmic Audit Paths)"]
+    STAT["StatutoryAssuranceEngine<br/>(FAA Part 89 &amp; EU AI Act Dossiers)"]
+  end
+
+  subgraph GRC["🦞 GRC_Claw Assurance Plane (ISO 42001)"]
+    direction TB
+    BRIDGE["GRCClawBridge<br/>(RFC 8785 Canonical JSON)"]
+    EV["GRC_Claw EvidenceStore<br/>(rbb:// URI &amp; Control Records)"]
+    GW["GRC_Claw Gateway Daemon<br/>(127.0.0.1:18791)"]
+    AIMS["ISO 42001 &amp; NIST AI RMF<br/>(Assurance Envelopes)"]
+  end
+
+  FLEET -->|Streaming Telemetry| INGEST
+  INGEST -->|Standardized Packet| SAFETY
+  SAFETY -->|Safe Filtered Command| FLEET
+  SAFETY -->|Decision &amp; State Record| AUDIT
+  AUDIT -->|Signed Compliance Passport| BRIDGE
+  BRIDGE -->|Canonical Evidence Record| EV
+  EV -->|HTTP / Sync| GW
+  GW -->|Compliance Dashboards| AIMS
 ```
-           ROBOT & FLEET ACTUATORS                        REGULATORY & COMPLIANCE
-   (Humanoid Joints, Drone Rotors, ROS 2, VLA)         (FAA Part 89, EU AI Act Annex III,
-                        │                                    ISO 10218 & ISO/TS 15066)
-                        ▼                                               │
- ┌──────────────────────────────────────────────────────────────────────▼──────┐
- │                            physical-ai-governor                             │
- │                                                                             │
- │   1. Ingestion & Protocol Engine (>100,000 packets/sec)                     │
- │      • Standardizes heterogeneous MAVLink v2 & ROS 2 trajectory states      │
- │      • Native binary MAVLink v2 framing & CRC-16-MCRF4XX checksum validator │
- │      • VLAActionHorizonValidator: screens multi-step action chunks (H=8..16)│
- │                                                                             │
- │   2. Control Barrier & Optimization Core (Forward Invariance)               │
- │      • ActiveSetQPSolver: pure Python strictly convex QP solver (<1ms)      │
- │      • QPSafetyFilter: minimal-norm intervention min 0.5 * ||u - u_nom||^2  │
- │      • HighOrderControlBarrierFilter: relative degree r=2 kinematics        │
- │      • HumanoidStabilityGovernor: Zero Moment Point (ZMP) & friction cone   │
- │                                                                             │
- │   3. MerkleBlackBoxLedger & Statutory Engine                                │
- │      • Streaming Merkle tree with logarithmic inclusion proofs              │
- │      • FAA Part 89 Remote ID broadcast generator (ASTM F3411-22a BLE/Wi-Fi) │
- │      • EU AI Act Annex III High-Risk Technical Conformity Dossier (JSON-LD) │
- │      • ISO/TS 15066 Biomechanical force limits across 29 body regions       │
- └──────────────────────────────────────┬──────────────────────────────────────┘
-                                        │
-                                        ▼
-                         PHYSICAL AI FLEET CERTIFICATION
-                  • 0.000% Safety Boundary Breaches Under Attack
-                  • Instantaneous Insurer & Aviation Compliance Passports
-                  • Universal Interoperability across Humanoids & Drones
+
+### Real-Time Supervisory Safety Loop (<50 µs)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Robot as Robot / VLA Policy
+  participant Stream as TelemetryStreamServer
+  participant Filter as QPSafetyFilter & StateMachine
+  participant Ledger as MerkleBlackBoxLedger
+  participant Claw as GRC_Claw Gateway (:18791)
+
+  Robot->>Stream: Stream state & nominal command (u_nom)
+  Stream->>Filter: Evaluate CBF constraints & ZMP stability
+  alt Safe Nominal Command
+    Filter-->>Stream: u_safe = u_nom (Zero Intervention)
+  else Hazardous Boundary Breach
+    Filter->>Filter: Solve Active-Set QP: min 0.5 * ||u - u_nom||²
+    Filter-->>Stream: u_safe = u_filtered (Clamped / Damped)
+  end
+  Stream->>Robot: Dispatch verified safe command (u_safe)
+  Stream->>Ledger: Append leaf hash to incremental Merkle tree
+  Ledger->>Claw: Issue Passport & attach to GRC_Claw EvidenceStore (ISO 42001)
+```
+
+---
+
+## 🦞 GRC_Claw Integration (ISO 42001 & NIST AI RMF)
+
+`physical-ai-governor` natively integrates with [GRC_Claw](https://github.com/AAH20/GRC_Claw), the open-source Autonomous AI Governance, Risk, and Compliance Engine:
+
+1. **RFC 8785 Canonical JSON Serialization**: Produces deterministic JSON digests matching `robot-black-box-contract`.
+2. **Standard EvidenceStore Packaging**: Generates certified `GRCClawEvidenceRecord` objects formatted for `evidence.attach` with `rbb://` URIs and lineage tracking.
+3. **ISO/IEC 42001:2023 Assessment Mapping**: Automatically certifies compliance across:
+   - **Clause 6.1**: Mathematical risk management via Control Barrier Functions.
+   - **Clause 8.2**: Operational risk mitigation (speed damping, torque clamping).
+   - **Clause 9.1**: Continuous monitoring and cryptographic Merkle verification.
+4. **GRC_Claw Gateway Daemon Sync**: Automatic HTTP/JSON synchronization with the local GRC_Claw daemon (`127.0.0.1:18791`) with resilient offline queueing.
+
+```python
+from physical_ai_governor import GRCClawBridge, MerkleBlackBoxLedger
+
+# 1. Initialize bridge to local GRC_Claw Gateway
+bridge = GRCClawBridge(gateway_url="http://127.0.0.1:18791", tenant_id=1)
+
+# 2. Package compliance passport into certified GRC_Claw EvidenceStore record
+passport = ledger.issue_compliance_passport("humanoid_gr00t_01", total_interventions=2)
+evidence = bridge.build_evidence_record(passport, control_id="ISO-42001-A.6.2.2-PHYSICAL-AI-SAFETY")
+
+print(f"Evidence URI: {evidence.uri}")
+print(f"Canonical SHA-256 Digest: {evidence.sha256}")
+
+# 3. Assess ISO 42001 readiness
+readiness = bridge.assess_iso42001_readiness(passport)
+print(f"ISO 42001 Status: {readiness['overall_iso42001_readiness']}")
+
+# 4. Synchronize with GRC_Claw Gateway
+sync_result = bridge.sync_to_gateway(evidence)
+print(f"Gateway Sync: {sync_result['status']}")
 ```
 
 ---
@@ -95,6 +173,7 @@ $$\pi_k = \{ (s_1, p_1), \dots, (s_m, p_m) \} \quad \text{such that} \quad \text
 
 | Standard / Regulation | Statutory Clause | Physical AI Governor Enforcement Mechanism |
 | :--- | :--- | :--- |
+| **GRC_Claw (ISO 42001)** | Clauses 6.1, 8.2, 9.1 (AI Management System) | Native RFC 8785 canonical evidence records, `rbb://` URI schema, and automated AIMS readiness envelopes. |
 | **FAA Part 89** | 14 CFR § 89.305 / § 89.310 (Remote ID Broadcast) | Generates ASTM F3411-22a compliant OpenDroneID broadcast frames (Type 0x1 Location/Vector & Type 0x5 Operator ID). |
 | **EU AI Act** | Annex III, Section 2 & 5 (High-Risk AI Systems) | Automatic JSON-LD technical conformity dossiers, continuous CBF boundary guarantees, and post-market audit trails. |
 | **ISO 10218-1 / 2** | Section 5.10 (Collaborative Robot Safety) | Human proximity protective damping, dynamic speed and separation monitoring (SSM), and joint torque limits (PFL). |
@@ -109,7 +188,9 @@ $$\pi_k = \{ (s_1, p_1), \dots, (s_m, p_m) \} \quad \text{such that} \quad \text
 - **Formal QP-CBF & HOCBF**: Mathematical forward invariance and smooth second-order deceleration.
 - **Vision-Language-Action (VLA) Chunk Screening**: Validates OpenVLA, Octo, and RT-2 action chunks prior to physical execution.
 - **Forensic Audit & Inclusion Proofs**: Merkle black-box audit ledger with logarithmic inclusion verification.
-- **Built-in CLI**: Turnkey commands for benchmarking, VLA chunk simulation, FAA Remote ID broadcast, and EU AI Act dossier exports.
+- **ISO 10218 Safety State Machine**: Automatic collaborative reduced speed, protective stop, and emergency stop transitions.
+- **GRC_Claw Integration**: Full interoperability with the GRC_Claw evidence plane and ISO 42001 governance engine.
+- **Built-in CLI**: Turnkey commands for benchmarking, VLA simulation, GRC_Claw sync, Remote ID, and conformity dossiers.
 
 ---
 
@@ -207,26 +288,6 @@ is_valid = MerkleBlackBoxLedger.verify_audit_proof(leaf, proof, root)
 print(f"Merkle Inclusion Proof Verified: {is_valid}")
 ```
 
-### 5. Statutory Assurance: FAA Remote ID & EU AI Act Dossier
-
-```python
-from physical_ai_governor import StatutoryAssuranceEngine
-
-engine = StatutoryAssuranceEngine()
-
-# FAA Part 89 Remote ID OpenDroneID packet
-remote_id = engine.synthesize_faa_part89_remote_id(
-    lat=37.7749, lon=-122.4194, alt_m=120.0, speed_mps=4.5,
-    operator_id="FAA-US-2026-PHYSICAL-AI",
-)
-print(f"FAA Remote ID Hex: {remote_id['message_type_0x1_hex']}")
-
-# EU AI Act Annex III Technical Conformity Dossier
-passport = ledger.issue_compliance_passport("humanoid_gr00t_01", total_interventions=1)
-dossier = engine.generate_eu_ai_act_annex_iii_dossier(passport)
-print(f"Conformity Dossier Document Type: {dossier['document_type']}")
-```
-
 ---
 
 ## 💻 CLI Usage
@@ -237,13 +298,16 @@ print(f"Conformity Dossier Document Type: {dossier['document_type']}")
 # 1. Run high-frequency CBF benchmark (1,000 cycles)
 physical-ai-governor benchmark --cycles 1000
 
-# 2. Simulate VLA action chunk horizon safety screening
+# 2. Synchronize compliance passport with GRC_Claw evidence plane
+physical-ai-governor grc-claw-sync --cycles 100 --robot-id humanoid_gr00t_01
+
+# 3. Simulate VLA action chunk horizon safety screening
 physical-ai-governor vla-eval --horizon 8 --robot-id humanoid_gr00t_01
 
-# 3. Export EU AI Act Annex III technical conformity dossier
+# 4. Export EU AI Act Annex III technical conformity dossier
 physical-ai-governor export-dossier --robot-id humanoid_gr00t_01 -o dossier.json
 
-# 4. Synthesize FAA Part 89 Remote ID broadcast packet
+# 5. Synthesize FAA Part 89 Remote ID broadcast packet
 physical-ai-governor remote-id --lat 37.7749 --lon -122.4194 --speed 4.0
 ```
 
@@ -261,8 +325,11 @@ test_compliance_passport_issuance (test_physical_ai.TestPhysicalAIGovernor.test_
 test_control_barrier_human_proximity_damping (test_physical_ai.TestPhysicalAIGovernor.test_control_barrier_human_proximity_damping) ... ok
 test_control_barrier_torque_clamping (test_physical_ai.TestPhysicalAIGovernor.test_control_barrier_torque_clamping) ... ok
 test_end_to_end_benchmark_runner (test_physical_ai.TestPhysicalAIGovernor.test_end_to_end_benchmark_runner) ... ok
+test_grc_claw_canonical_and_evidence_packaging (test_physical_ai.TestPhysicalAIGovernor.test_grc_claw_canonical_and_evidence_packaging) ... ok
+test_grc_claw_rbb_event_stream (test_physical_ai.TestPhysicalAIGovernor.test_grc_claw_rbb_event_stream) ... ok
 test_high_order_control_barrier_filter (test_physical_ai.TestPhysicalAIGovernor.test_high_order_control_barrier_filter) ... ok
 test_humanoid_stability_governor (test_physical_ai.TestPhysicalAIGovernor.test_humanoid_stability_governor) ... ok
+test_iso10218_safety_state_machine (test_physical_ai.TestPhysicalAIGovernor.test_iso10218_safety_state_machine) ... ok
 test_mavlink_binary_frame_and_crc (test_physical_ai.TestPhysicalAIGovernor.test_mavlink_binary_frame_and_crc) ... ok
 test_merkle_audit_proof_generation_and_verification (test_physical_ai.TestPhysicalAIGovernor.test_merkle_audit_proof_generation_and_verification) ... ok
 test_merkle_blackbox_hash_chaining (test_physical_ai.TestPhysicalAIGovernor.test_merkle_blackbox_hash_chaining) ... ok
@@ -270,10 +337,11 @@ test_qp_safety_filter (test_physical_ai.TestPhysicalAIGovernor.test_qp_safety_fi
 test_qp_solver_unconstrained_and_constrained (test_physical_ai.TestPhysicalAIGovernor.test_qp_solver_unconstrained_and_constrained) ... ok
 test_statutory_engine_faa_eu_iso (test_physical_ai.TestPhysicalAIGovernor.test_statutory_engine_faa_eu_iso) ... ok
 test_telemetry_ingestion_parsers (test_physical_ai.TestPhysicalAIGovernor.test_telemetry_ingestion_parsers) ... ok
+test_telemetry_stream_server_processing (test_physical_ai.TestPhysicalAIGovernor.test_telemetry_stream_server_processing) ... ok
 test_vla_action_horizon_validator (test_physical_ai.TestPhysicalAIGovernor.test_vla_action_horizon_validator) ... ok
 
 ----------------------------------------------------------------------
-Ran 15 tests in 0.008s
+Ran 19 tests in 0.027s
 
 OK
 ```

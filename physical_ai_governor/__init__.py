@@ -2,7 +2,7 @@
 Physical AI Governor: Autonomous Physical AI, Humanoid (GR00T) & Drone Swarm GRC Assurance Engine.
 Enforces continuous Control Barrier Functions (CBF, QP-CBF, HOCBF) over streaming ROS 2, MAVLink,
 and VLA joint trajectories, notarizing tamper-evident black-box Merkle ledgers and compliance passports
-for FAA Part 89, EU AI Act Annex III, and ISO 10218 / ISO/TS 15066.
+for FAA Part 89, EU AI Act Annex III, ISO 10218 / ISO/TS 15066, and GRC_Claw (ISO 42001).
 """
 
 from .control_barrier import (
@@ -14,6 +14,12 @@ from .control_barrier import (
     SafetyDecision,
 )
 from .evaluator import PhysicalAIBenchmarkRunner
+from .grc_claw_bridge import (
+    GRCClawBridge,
+    GRCClawEvidenceRecord,
+    canonical_json,
+    compute_canonical_digest,
+)
 from .mavlink_frame import (
     MAVLinkFrameParser,
     MAVLinkV2Message,
@@ -22,28 +28,38 @@ from .mavlink_frame import (
 )
 from .merkle_blackbox import CompliancePassport, MerkleBlackBoxLedger
 from .qp_solver import ActiveSetQPSolver, QPSolution
+from .safety_state_machine import (
+    ISO10218SafetyStateMachine,
+    RobotSafetyState,
+    StateTransitionRecord,
+)
 from .statutory_engine import (
     ISO15066_BIOMECHANICAL_LIMITS_N,
     RemoteIDLocationPayload,
     StatutoryAssuranceEngine,
 )
 from .telemetry_ingest import RobotTelemetryPacket, TelemetryIngestor
+from .telemetry_stream import TelemetryStreamServer
 from .vla_validator import VLAActionHorizonValidator, VLAChunkValidationResult
 
 __all__ = [
-    # Telemetry
+    # Telemetry & Streaming
     "TelemetryIngestor",
     "RobotTelemetryPacket",
     "MAVLinkFrameParser",
     "MAVLinkV2Message",
     "serialize_mavlink_v2_global_position",
     "calculate_mavlink_crc",
-    # Control Barrier Functions
+    "TelemetryStreamServer",
+    # Control Barrier Functions & Safety State Machine
     "ControlBarrierFilter",
     "QPSafetyFilter",
     "HighOrderControlBarrierFilter",
     "HumanoidStabilityGovernor",
     "HumanoidStabilityState",
+    "ISO10218SafetyStateMachine",
+    "RobotSafetyState",
+    "StateTransitionRecord",
     "SafetyDecision",
     # Optimization
     "ActiveSetQPSolver",
@@ -58,6 +74,11 @@ __all__ = [
     "StatutoryAssuranceEngine",
     "RemoteIDLocationPayload",
     "ISO15066_BIOMECHANICAL_LIMITS_N",
+    # GRC_Claw Bridge
+    "GRCClawBridge",
+    "GRCClawEvidenceRecord",
+    "canonical_json",
+    "compute_canonical_digest",
     # Benchmark
     "PhysicalAIBenchmarkRunner",
 ]

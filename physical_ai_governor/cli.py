@@ -137,6 +137,61 @@ def cmd_remote_id(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_grc_claw_sync(args: argparse.Namespace) -> int:
+    """Synchronizes notarized compliance passport with GRC_Claw evidence plane."""
+    from .grc_claw_bridge import GRCClawBridge
+
+    print(f"🦞 Synchronizing with GRC_Claw Gateway ({args.gateway_url})...")
+    ingestor = TelemetryIngestor()
+    cbf = ControlBarrierFilter()
+    ledger = MerkleBlackBoxLedger()
+
+    for i in range(args.cycles):
+        pkt = ingestor.parse_humanoid_joint_state(
+            robot_id=args.robot_id,
+            timestamp_ns=i * 1_000_000,
+            base_pos=(0, 0, 1.2),
+            base_vel=(0.2, 0, 0),
+            current_torques=[30, -20],
+            commanded_torques=[40, -30],
+            human_proximity=2.5,
+            battery=90.0,
+        )
+        dec = cbf.evaluate_safety(pkt)
+        ledger.append_record(pkt, dec)
+
+    passport = ledger.issue_compliance_passport(args.robot_id, total_interventions=0)
+    bridge = GRCClawBridge(gateway_url=args.gateway_url, tenant_id=args.tenant_id)
+    evidence = bridge.build_evidence_record(passport)
+    iso42001 = bridge.assess_iso42001_readiness(passport)
+    sync_result = bridge.sync_to_gateway(evidence)
+
+    print("=" * 65)
+    print("  GRC_CLAW (ISO 42001) EVIDENCE SYNCHRONIZATION")
+    print("=" * 65)
+    print(f"  Robot ID:                    {passport.robot_id}")
+    print(f"  Evidence URI:                {evidence.uri}")
+    print(f"  Canonical SHA256:            {evidence.sha256}")
+    print(f"  Control ID:                  {evidence.controlId}")
+    print(f"  ISO 42001 Readiness:        {iso42001['overall_iso42001_readiness']}")
+    print(f"  Gateway Sync Status:         {sync_result['status']}")
+    if "message" in sync_result:
+        print(f"  Gateway Note:                {sync_result['message']}")
+    print("=" * 65)
+
+    if args.output:
+        bundle = {
+            "evidence": evidence.to_dict(),
+            "iso42001_assessment": iso42001,
+            "sync_result": sync_result,
+        }
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(json.dumps(bundle, indent=2))
+        print(f"✅ GRC_Claw evidence bundle saved to: {args.output}")
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="physical-ai-governor",
@@ -172,6 +227,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_rid.add_argument("--speed", type=float, default=5.0, help="Horizontal speed (m/s)")
     p_rid.add_argument("--operator-id", type=str, default="FAA-US-2026-PHYSICAL-AI", help="Registered Operator ID")
     p_rid.set_defaults(func=cmd_remote_id)
+
+    # grc-claw-sync
+    p_claw = subparsers.add_parser("grc-claw-sync", help="Synchronize compliance passport with GRC_Claw evidence plane")
+    p_claw.add_argument("--gateway-url", type=str, default="http://127.0.0.1:18791", help="GRC_Claw gateway URL")
+    p_claw.add_argument("--robot-id", type=str, default="humanoid_gr00t_01", help="Robot identifier")
+    p_claw.add_argument("--tenant-id", type=int, default=1, help="GRC_Claw tenant ID")
+    p_claw.add_argument("--cycles", type=int, default=100, help="Telemetry cycles to audit")
+    p_claw.add_argument("--output", "-o", type=str, default=None, help="Output bundle file path")
+    p_claw.set_defaults(func=cmd_grc_claw_sync)
 
     return parser
 
