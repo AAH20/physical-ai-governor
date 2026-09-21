@@ -165,9 +165,22 @@ class QPSafetyFilter:
         h_prox = packet.human_distance_meters - self.min_human_distance_m
         # Approximation of relative approach rate if moving directly towards human
         vel_mag = math.sqrt(sum(v * v for v in packet.velocity_xyz))
+
+        # Wire control_matrix_g into Lie derivative CBF constraints:
+        # L_g h(x) * u >= - L_f h(x) - gamma * h(x)  <=>  - L_g h(x) * u <= L_f h(x) + gamma * h(x)
+        if control_matrix_g:
+            for g_idx, g_row in enumerate(control_matrix_g):
+                if len(g_row) == n:
+                    A_cbf.append([-float(val) for val in g_row])
+                    # L_f h(x) drift term + gamma * h(x)
+                    drift_lf = -vel_mag
+                    b_val = drift_lf + self.cbf_gamma * max(0.0, h_prox)
+                    b_cbf.append(b_val)
+                    reasons.append(f"QP CBF control_matrix_g[{g_idx}] Constraint Active")
+
         # dh/dt = -v_rel >= -gamma * h(x)  => v_rel <= gamma * h(x)
-        if h_prox < 0.5:
-            # Add coupled constraint bounding total deceleration authority
+        if h_prox < 0.5 and not control_matrix_g:
+            # Fallback coupled constraint bounding total deceleration authority if g not provided
             # sum(u_i) <= max_allowable when close
             max_forward_effort = max(0.0, (h_prox / 0.5)) * self.max_joint_torque_nm * n
             row = [1.0] * n

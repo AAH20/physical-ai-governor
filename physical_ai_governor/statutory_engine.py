@@ -1,9 +1,11 @@
 """
-Statutory Regulatory Compliance & Assurance Engine.
-Automates certification, broadcast, and technical documentation dossiers for:
+Synthetic Regulatory Evidence & Documentation Engine.
+Synthesizes technical evidence, test dossiers, and broadcast packet framing for:
     1. FAA Part 89 (14 CFR § 89.305 / § 89.310) Remote ID OpenDroneID framing.
-    2. EU AI Act (Regulation (EU) 2024/1689 Annex III High-Risk AI) Conformity Dossiers.
+    2. EU AI Act (Regulation (EU) 2024/1689 Article 6(1) & Annex III) Evidence Dossiers.
     3. ISO/TS 15066 Collaborative Robot Biomechanical Contact Force Limits.
+NOTE: Generates technical assurance evidence for evaluation; formal regulatory compliance
+requires independent accredited conformity assessment body (CAB) audit and approved MOC.
 Zero external dependencies (pure Python standard library).
 """
 
@@ -138,7 +140,7 @@ class StatutoryAssuranceEngine:
             "system_profile": {
                 "system_name": system_name,
                 "robot_id": passport.robot_id,
-                "classification": "High-Risk AI System (Annex III, Section 2: Critical Infrastructure & Section 5: Machinery Safety)",
+                "classification": "High-Risk AI System (Article 6(1) Safety Components under Machinery Regulation (EU) 2023/1230 / Annex III Section 2 Critical Infrastructure)",
                 "intended_purpose": intended_purpose,
                 "statutory_passport_timestamp": passport.timestamp,
             },

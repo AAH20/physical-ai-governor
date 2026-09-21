@@ -220,7 +220,7 @@ class GRCClawBridge:
                     "bipedal_stability_confirmed": stability_ok,
                 },
             },
-            "overall_iso42001_readiness": "CERTIFIED_ASSURED" if stability_ok else "CONDITIONAL_APPROVAL",
+            "overall_iso42001_readiness": "CONTROL_EVIDENCE_GENERATED" if stability_ok else "CONDITIONAL_APPROVAL",
         }
 
     def sync_to_gateway(

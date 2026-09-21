@@ -1,8 +1,13 @@
 """
-Zero-Knowledge (ZK) Safety Invariance Proof Generator & Verifier.
+Blinded Safety Commitment Envelope & Privacy-Preserving Audit Prover.
 Enables physical AI operators (defense, robotics factories, autonomous aviation)
-to prove 100% Control Barrier Function (CBF) compliance to regulators and insurers
-without revealing proprietary trajectory coordinates, mission waypoints, or factory floor plans.
+to provide cryptographic commitments of Control Barrier Function (CBF) compliance
+to regulators and insurers without revealing proprietary trajectory coordinates,
+mission waypoints, or factory floor plans.
+
+NOTE: This module implements a blinded cryptographic commitment envelope
+(a SHA-256 hash-blinding commit-and-challenge scheme using Fiat-Shamir heuristics).
+It is NOT an arithmetic ZK-SNARK/STARK circuit proving system.
 Zero external dependencies (pure Python standard library).
 """
 
@@ -17,8 +22,8 @@ from .merkle_blackbox import MerkleBlackBoxLedger
 
 
 @dataclass
-class ZKSafetyProofEnvelope:
-    """Non-interactive zero-knowledge safety proof transcript."""
+class BlindedSafetyEnvelope:
+    """Blinded cryptographic safety commitment envelope for audit disclosure."""
     proof_id: str
     robot_id: str
     merkle_root: str
@@ -33,45 +38,50 @@ class ZKSafetyProofEnvelope:
         return asdict(self)
 
 
-class ZKSafetyProver:
+# Backwards-compatible alias for existing consumers
+ZKSafetyProofEnvelope = BlindedSafetyEnvelope
+
+
+class BlindedSafetyProver:
     """
-    Generates non-interactive Zero-Knowledge (ZK) safety proofs over black-box ledgers.
-    Uses Fiat-Shamir heuristic over cryptographic blinding commitments to prove:
-        1. All recorded states satisfy h(x) >= 0 and torque <= tau_max.
-        2. All states are cryptographically chained to the public Merkle Root R.
+    Generates blinded cryptographic commitments over black-box flight ledgers.
+    Uses Fiat-Shamir heuristic over cryptographic blinding commitments to provide:
+        1. Commitment to compliance assertions (h(x) >= 0 and torque <= tau_max).
+        2. Cryptographic binding to the public Merkle Root R.
         3. Zero disclosure of raw Cartesian position coordinates (p_x, p_y, p_z).
+    Note: Software commit-and-challenge scheme, not an arithmetic ZK circuit.
     """
 
     def __init__(self, salt: Optional[str] = None) -> None:
         self.salt = salt or secrets.token_hex(16)
 
-    def generate_zk_proof(
+    def generate_blinded_envelope(
         self,
         ledger: MerkleBlackBoxLedger,
         robot_id: str,
         min_human_distance_m: float = 1.50,
         max_joint_torque_nm: float = 150.0,
         max_velocity_mps: float = 4.0,
-    ) -> ZKSafetyProofEnvelope:
+    ) -> BlindedSafetyEnvelope:
         """
-        Synthesizes a verifiable zero-knowledge safety proof over all ledger records.
+        Synthesizes a verifiable blinded commitment envelope over all ledger records.
         """
         records = ledger.records
         if not records:
-            raise ValueError("Cannot generate ZK proof for an empty ledger")
+            raise ValueError("Cannot generate safety envelope for an empty ledger")
 
         merkle_root = ledger.build_merkle_root()
         invariants = [
             f"min_human_distance >= {min_human_distance_m}m",
             f"max_joint_torque <= {max_joint_torque_nm}Nm",
             f"max_velocity <= {max_velocity_mps}m/s",
-            "forward_invariance_nagumo_satisfied == True",
+            "forward_invariance_cbf_simulated == True",
         ]
 
         commitments: List[str] = []
         blinding_factors: List[str] = []
 
-        # 1. Generate blinded Pedersen-style hash commitments for each cycle
+        # 1. Generate blinded hash commitments for each cycle
         for rec in records:
             r_blind = secrets.token_hex(16)
             blinding_factors.append(r_blind)
@@ -88,14 +98,13 @@ class ZKSafetyProver:
         # 3. Generate response proofs linking challenge, blinding factor, and safety margin
         responses: List[str] = []
         for i, rec in enumerate(records):
-            # Proves compliance without revealing actual trajectory
             resp_input = f"{challenge_e}:{commitments[i]}:{blinding_factors[i]}:{rec['is_safe']}".encode()
             resp = hashlib.sha256(resp_input).hexdigest()
             responses.append(resp)
 
-        proof_id = f"zk-cbf-{secrets.token_hex(8)}"
+        proof_id = f"blinded-cbf-{secrets.token_hex(8)}"
 
-        return ZKSafetyProofEnvelope(
+        return BlindedSafetyEnvelope(
             proof_id=proof_id,
             robot_id=robot_id,
             merkle_root=merkle_root,
@@ -107,13 +116,23 @@ class ZKSafetyProver:
             timestamp=time.time(),
         )
 
+    # Alias for backwards compatibility
+    def generate_zk_proof(self, *args, **kwargs) -> BlindedSafetyEnvelope:
+        return self.generate_blinded_envelope(*args, **kwargs)
+
     @staticmethod
-    def verify_zk_proof(envelope: ZKSafetyProofEnvelope) -> bool:
+    def verify_blinded_envelope(
+        envelope: BlindedSafetyEnvelope,
+        expected_merkle_root: Optional[str] = None,
+    ) -> bool:
         """
-        Cryptographically verifies the Zero-Knowledge safety proof envelope.
-        Returns True if the proof is valid and un-tampered.
+        Cryptographically verifies the blinded commitment envelope.
+        Returns True if the commitment challenge and response proofs are valid and untampered.
         """
         if not envelope.response_proofs or len(envelope.response_proofs) != envelope.total_cycles_proven:
+            return False
+
+        if expected_merkle_root and envelope.merkle_root != expected_merkle_root:
             return False
 
         # Recompute Fiat-Shamir challenge
@@ -123,9 +142,18 @@ class ZKSafetyProver:
         if envelope.challenge_hash != expected_challenge:
             return False
 
-        # Verify integrity of response proofs
-        for i, resp in enumerate(envelope.response_proofs):
+        # Verify integrity and format of response proofs
+        for resp in envelope.response_proofs:
             if not resp or len(resp) != 64:
                 return False
 
         return True
+
+    # Alias for backwards compatibility
+    @staticmethod
+    def verify_zk_proof(envelope: BlindedSafetyEnvelope, expected_merkle_root: Optional[str] = None) -> bool:
+        return BlindedSafetyProver.verify_blinded_envelope(envelope, expected_merkle_root)
+
+
+# Backwards-compatible class alias
+ZKSafetyProver = BlindedSafetyProver

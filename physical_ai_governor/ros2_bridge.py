@@ -92,7 +92,7 @@ class ROS2TelemetryBridge:
             commanded_efforts=commanded_efforts,
             human_proximity_m=human_proximity_m,
         )
-        decision = self.cbf = self.cbf.evaluate_safety(pkt)
+        decision = self.cbf.evaluate_safety(pkt)
         leaf_hash = self.ledger.append_record(pkt, decision)
 
         diagnostics = {

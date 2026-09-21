@@ -10,6 +10,9 @@ Performs offline, deterministic forensic audit over .rbb bundles:
 Pure Python 3.10+ standard library (zero external dependencies).
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import pathlib
 from dataclasses import asdict, dataclass
@@ -49,9 +52,24 @@ class RobotBlackBoxVerifier:
     """
 
     @classmethod
-    def verify_bundle(cls, bundle_dir: str) -> RBBVerificationReport:
+    def verify_bundle(
+        cls,
+        bundle_dir: str,
+        signing_secret: Optional[bytes] = None,
+    ) -> RBBVerificationReport:
         """
         Audits an on-disk RBB bundle directory.
+        Cryptographically verifies:
+            1. Manifest RFC 8785 canonical format and body digest
+            2. Trust profile (trust.json) and key validity / non-revocation
+            3. events.ndjson file SHA-256 matches manifest
+            4. Sequential hash chaining (previous_digest == prior event_digest)
+            5. Recomputed event body digest matches authenticated event_digest (RFC 8785)
+               (Detects payload mutations, unauthorized scope alterations, and spoofing)
+            6. Manifest head_digest matches final event digest
+            7. Checkpoint & witness receipt body digests and hash chain
+            8. Witness latest-heads consensus matches head_digest
+            9. Optional HMAC signature verification if signing_secret provided
         Returns an RBBVerificationReport with comprehensive check diagnostics.
         """
         bundle_path = pathlib.Path(bundle_dir)
@@ -97,7 +115,21 @@ class RobotBlackBoxVerifier:
                 errors=errors,
             )
 
-        # 2. Manifest Verification
+        # 2. Trust Profile Verification
+        producers: Dict[str, Any] = {}
+        try:
+            trust_bytes = (bundle_path / "trust.json").read_bytes()
+            trust = json.loads(trust_bytes)
+            canon_trust = canonical_json(trust).encode("utf-8")
+            if canon_trust != trust_bytes:
+                errors.append("trust.json is not canonical RFC 8785 JSON")
+            else:
+                checks_passed.append("trust_canonical_json_valid")
+            producers = trust.get("producers", {})
+        except Exception as exc:
+            errors.append(f"Failed parsing trust.json: {exc}")
+
+        # 3. Manifest Verification & Body Digest Check
         try:
             manifest_bytes = (bundle_path / "manifest.json").read_bytes()
             manifest = json.loads(manifest_bytes)
@@ -112,6 +144,33 @@ class RobotBlackBoxVerifier:
             manifest_events_digest = manifest.get("events_digest", "")
             manifest_checkpoints_digest = manifest.get("checkpoints_digest", "")
             manifest_head_digest = manifest.get("head_digest", "")
+
+            # Recompute and verify manifest body digest
+            manifest_body = {k: v for k, v in manifest.items() if k != "authentication"}
+            recomputed_manifest_digest = sha256_hex(canonical_json(manifest_body).encode("utf-8"))
+            manifest_auth = manifest.get("authentication", {})
+            if manifest_auth:
+                auth_manifest_digest = manifest_auth.get("event_digest", "")
+                if recomputed_manifest_digest != auth_manifest_digest:
+                    errors.append(
+                        f"Manifest body digest mismatch (MANIFEST_TAMPERED): recomputed '{recomputed_manifest_digest}' != authenticated '{auth_manifest_digest}'"
+                    )
+                else:
+                    checks_passed.append("manifest_body_digest_verified")
+
+                m_key_id = manifest_auth.get("key_id", "")
+                if m_key_id in producers and producers[m_key_id].get("revoked", False):
+                    errors.append(f"Manifest signed by revoked key_id: '{m_key_id}'")
+
+                if signing_secret:
+                    m_domain_prefix = b"RBB-MANIFEST-v1\0"
+                    m_msg = m_domain_prefix + bytes.fromhex(auth_manifest_digest)
+                    m_sig_bytes = hmac.new(signing_secret, m_msg, hashlib.sha256).digest()
+                    expected_m_sig = base64.b64encode(m_sig_bytes * 2).decode("ascii")
+                    if manifest_auth.get("signature") != expected_m_sig:
+                        errors.append("Manifest signature verification failed")
+                    else:
+                        checks_passed.append("manifest_signature_verified")
         except Exception as exc:
             errors.append(f"Failed parsing manifest.json: {exc}")
             return RBBVerificationReport(
@@ -126,7 +185,7 @@ class RobotBlackBoxVerifier:
                 errors=errors,
             )
 
-        # 3. Events.ndjson Raw Digest Verification
+        # 4. Events.ndjson Raw Digest Verification
         events_bytes = (bundle_path / "events.ndjson").read_bytes()
         actual_events_digest = sha256_hex(events_bytes)
         if actual_events_digest != manifest_events_digest:
@@ -141,7 +200,7 @@ class RobotBlackBoxVerifier:
         else:
             checks_passed.append("events_ndjson_trailing_newline_valid")
 
-        # 4. Sequential Events Hash Chaining & Schema Validation
+        # 5. Sequential Events Hash Chaining & Recomputed Body Digest Validation
         lines = [line for line in events_bytes.splitlines() if line.strip()]
         if len(lines) != expected_event_count:
             errors.append(f"Event count mismatch: expected {expected_event_count}, found {len(lines)}")
@@ -161,6 +220,31 @@ class RobotBlackBoxVerifier:
 
                 # Schema validation
                 validate_rbb_event(evt)
+
+                # Recompute event body digest (CRITICAL FORENSIC CHECK: catches payload tampering)
+                evt_body = {k: v for k, v in evt.items() if k != "authentication"}
+                recomputed_evt_digest = sha256_hex(canonical_json(evt_body).encode("utf-8"))
+                auth = evt.get("authentication", {})
+                auth_digest = auth.get("event_digest", "")
+
+                if recomputed_evt_digest != auth_digest:
+                    errors.append(
+                        f"Event {i+1} body digest mismatch (BODY_TAMPERED): recomputed '{recomputed_evt_digest}' != authenticated '{auth_digest}'"
+                    )
+
+                # Key trust and revocation check
+                evt_key_id = auth.get("key_id", "")
+                if evt_key_id in producers and producers[evt_key_id].get("revoked", False):
+                    errors.append(f"Event {i+1} signed by revoked key_id: '{evt_key_id}'")
+
+                # Optional HMAC signature verification
+                if signing_secret and auth_digest:
+                    e_domain_prefix = b"RBB-EVENT-v1\0"
+                    e_msg = e_domain_prefix + bytes.fromhex(auth_digest)
+                    e_sig_bytes = hmac.new(signing_secret, e_msg, hashlib.sha256).digest()
+                    expected_e_sig = base64.b64encode(e_sig_bytes * 2).decode("ascii")
+                    if auth.get("signature") != expected_e_sig:
+                        errors.append(f"Event {i+1} signature verification failed")
 
                 # Sequence check
                 if evt.get("sequence") != i + 1:
@@ -182,17 +266,18 @@ class RobotBlackBoxVerifier:
                     errors.append(f"Event {i+1} run_id '{evt.get('run_id')}' != manifest run_id '{run_id}'")
 
                 seen_event_ids.add(evt["event_id"])
-                previous_digest = evt["authentication"]["event_digest"]
+                previous_digest = auth_digest
                 parsed_events.append(evt)
 
             except Exception as exc:
                 errors.append(f"Event {i+1} validation error: {exc}")
 
-        if not errors:
+        if not any("body digest mismatch" in err or "broken hash link" in err for err in errors):
+            checks_passed.append("events_body_digests_recomputed_valid")
             checks_passed.append("events_cryptographic_hash_chain_valid")
             checks_passed.append("events_schema_conformance_valid")
 
-        # 5. Manifest Head Digest Verification
+        # 6. Manifest Head Digest Verification
         if previous_digest != manifest_head_digest:
             errors.append(
                 f"Head digest mismatch: final event digest '{previous_digest}' != manifest head_digest '{manifest_head_digest}'"
@@ -200,7 +285,7 @@ class RobotBlackBoxVerifier:
         else:
             checks_passed.append("head_digest_matched")
 
-        # 6. Checkpoints & Witness Consensus
+        # 7. Checkpoints & Witness Consensus
         try:
             cp_bytes = (bundle_path / "checkpoints.json").read_bytes()
             actual_cp_digest = sha256_hex(cp_bytes)
@@ -216,6 +301,24 @@ class RobotBlackBoxVerifier:
             for j, cp_item in enumerate(checkpoints):
                 cp = cp_item.get("checkpoint", {})
                 receipt = cp_item.get("receipt", {})
+
+                # Verify checkpoint body digest
+                cp_body = {k: v for k, v in cp.items() if k != "authentication"}
+                recomputed_cp_digest = sha256_hex(canonical_json(cp_body).encode("utf-8"))
+                cp_auth_digest = cp.get("authentication", {}).get("event_digest")
+                if recomputed_cp_digest != cp_auth_digest:
+                    errors.append(
+                        f"Checkpoint {j+1} body digest mismatch (CHECKPOINT_TAMPERED): recomputed '{recomputed_cp_digest}' != authenticated '{cp_auth_digest}'"
+                    )
+
+                # Verify receipt body digest
+                rc_body = {k: v for k, v in receipt.items() if k != "authentication"}
+                recomputed_rc_digest = sha256_hex(canonical_json(rc_body).encode("utf-8"))
+                rc_auth_digest = receipt.get("authentication", {}).get("event_digest")
+                if recomputed_rc_digest != rc_auth_digest:
+                    errors.append(
+                        f"Checkpoint receipt {j+1} body digest mismatch (WITNESS_TAMPERED): recomputed '{recomputed_rc_digest}' != authenticated '{rc_auth_digest}'"
+                    )
 
                 # Check previous checkpoint link
                 if cp.get("previous_checkpoint_digest") != prior_cp_digest:
@@ -234,10 +337,10 @@ class RobotBlackBoxVerifier:
 
                 prior_cp_digest = cp["authentication"]["event_digest"]
 
-            if not errors:
+            if not any("Checkpoint" in err for err in errors):
                 checks_passed.append("checkpoints_chain_valid")
 
-            # 7. Witness Latest-Heads Verification
+            # 8. Witness Latest-Heads Verification
             heads_bytes = (bundle_path / "witness" / "latest-heads.json").read_bytes()
             heads = json.loads(heads_bytes)
             if run_id not in heads:

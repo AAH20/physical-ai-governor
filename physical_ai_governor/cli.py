@@ -220,15 +220,15 @@ def cmd_zk_prove(args: argparse.Namespace) -> int:
     is_valid = ZKSafetyProver.verify_zk_proof(envelope)
 
     print("=" * 65)
-    print("  ZERO-KNOWLEDGE (ZK) SAFETY INVARIANCE PROOF")
+    print("  BLINDED COMMITMENT SAFETY ENVELOPE (PRIVACY AUDIT)")
     print("=" * 65)
     print(f"  Proof ID:                    {envelope.proof_id}")
     print(f"  Robot ID:                    {envelope.robot_id}")
     print(f"  Merkle Root Anchor:          {envelope.merkle_root}")
     print(f"  Cycles Proven:               {envelope.total_cycles_proven}")
     print(f"  Fiat-Shamir Challenge:       {envelope.challenge_hash[:20]}...")
-    print(f"  ZK Proof Verified:           {is_valid}")
-    print("  Invariants Certified (Zero Coordinate Leakage):")
+    print(f"  Blinded Envelope Verified:   {is_valid}")
+    print("  Invariants Claimed (Zero Coordinate Leakage):")
     for inv in envelope.invariants_certified:
         print(f"    • {inv}")
     print("=" * 65)
@@ -236,7 +236,7 @@ def cmd_zk_prove(args: argparse.Namespace) -> int:
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(json.dumps(envelope.to_dict(), indent=2))
-        print(f"✅ ZK proof envelope saved to: {args.output}")
+        print(f"✅ Blinded safety envelope saved to: {args.output}")
 
     return 0
 

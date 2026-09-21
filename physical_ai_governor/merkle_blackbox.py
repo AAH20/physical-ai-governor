@@ -19,7 +19,7 @@ from .telemetry_ingest import RobotTelemetryPacket
 
 @dataclass
 class CompliancePassport:
-    """Certified statutory compliance passport for insurers and civil aviation authorities."""
+    """Synthetic evidence passport reflecting local deterministic CBF and telemetry simulation results."""
     robot_id: str
     merkle_root: str
     packets_audited: int
@@ -168,9 +168,9 @@ class MerkleBlackBoxLedger:
             merkle_root=merkle_root,
             packets_audited=len(self.leaf_hashes),
             safety_interventions_count=total_interventions,
-            faa_part89_remote_id_status="CERTIFIED_COMPLIANT",
-            eu_ai_act_annex_iii_status="SAFETY_COMPONENT_VERIFIED",
-            iso10218_robot_safety_status="FORWARD_INVARIANCE_CONFIRMED",
+            faa_part89_remote_id_status="FAA_MOC_DOC_REQUIRED",
+            eu_ai_act_annex_iii_status="CONTROL_EVIDENCE_GENERATED",
+            iso10218_robot_safety_status="SYNTHETIC_TEST_PASSED",
             notary_signature=sig,
             timestamp=now,
         )

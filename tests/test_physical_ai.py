@@ -134,9 +134,9 @@ class TestPhysicalAIGovernor(unittest.TestCase):
 
         passport = self.blackbox.issue_compliance_passport("humanoid_01", total_interventions=0)
         self.assertEqual(passport.robot_id, "humanoid_01")
-        self.assertEqual(passport.faa_part89_remote_id_status, "CERTIFIED_COMPLIANT")
-        self.assertEqual(passport.eu_ai_act_annex_iii_status, "SAFETY_COMPONENT_VERIFIED")
-        self.assertEqual(passport.iso10218_robot_safety_status, "FORWARD_INVARIANCE_CONFIRMED")
+        self.assertEqual(passport.faa_part89_remote_id_status, "FAA_MOC_DOC_REQUIRED")
+        self.assertEqual(passport.eu_ai_act_annex_iii_status, "CONTROL_EVIDENCE_GENERATED")
+        self.assertEqual(passport.iso10218_robot_safety_status, "SYNTHETIC_TEST_PASSED")
         self.assertEqual(len(passport.notary_signature), 64)
 
     def test_end_to_end_benchmark_runner(self) -> None:
@@ -177,6 +177,20 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         self.assertFalse(dec.is_safe)
         self.assertLessEqual(dec.filtered_command[0], 150.0)
         self.assertGreaterEqual(dec.filtered_command[1], -150.0)
+
+    def test_qp_safety_filter_with_control_matrix(self) -> None:
+        """Verifies QP-CBF incorporates control_matrix_g Lie derivative constraints."""
+        qp_filter = QPSafetyFilter(min_human_distance_m=1.5, max_joint_torque_nm=150.0)
+        pkt = self.ingestor.parse_humanoid_joint_state(
+            "gr00t_01", 100, (0, 0, 1.2), (0.5, 0, 0), [0], [120.0, -110.0], 1.2, 95
+        )
+        # 2 control inputs, control matrix g provides Lie derivative row that forces intervention
+        control_matrix_g = [[-0.8, 0.6]]
+        dec = qp_filter.evaluate_safety_qp(pkt, control_matrix_g=control_matrix_g)
+        self.assertIsNotNone(dec)
+        self.assertTrue(dec.intervention_triggered)
+        self.assertFalse(dec.is_safe)
+        self.assertIn("control_matrix_g", dec.violation_reason if dec.violation_reason else "")
 
     def test_high_order_control_barrier_filter(self) -> None:
         """Verifies relative-degree-2 HOCBF approach rate and deceleration damping."""
@@ -334,7 +348,7 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         self.assertEqual(len(evidence.sha256), 64)
 
         iso42001 = bridge.assess_iso42001_readiness(passport)
-        self.assertEqual(iso42001["overall_iso42001_readiness"], "CERTIFIED_ASSURED")
+        self.assertEqual(iso42001["overall_iso42001_readiness"], "CONTROL_EVIDENCE_GENERATED")
 
         # Offline sync returns OFFLINE_QUEUED or ONLINE_SYNC_SUCCESS
         res = bridge.sync_to_gateway(evidence)
@@ -505,6 +519,31 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         self.assertEqual(diag["level"], 1)
         self.assertEqual(len(leaf), 64)
 
+    def test_ros2_telemetry_bridge_multi_cycle(self) -> None:
+        """Verifies ROS 2 Telemetry Bridge executes multiple consecutive cycles without crashing."""
+        from physical_ai_governor.ros2_bridge import ROS2JointState, ROS2TelemetryBridge
+
+        bridge = ROS2TelemetryBridge()
+        msg = ROS2JointState(
+            names=["j1", "j2"],
+            positions=[0.1, -0.2],
+            velocities=[0.0, 0.0],
+            efforts=[25.0, -20.0],
+            stamp_sec=1700000000,
+            stamp_nanosec=100000,
+        )
+
+        for cycle in range(25):
+            decision, leaf, diag = bridge.process_ros2_cycle(
+                msg=msg,
+                robot_id="humanoid_ros2",
+                commanded_efforts=[40.0, -30.0],
+                human_proximity_m=3.0,
+            )
+            self.assertTrue(decision.is_safe)
+            self.assertEqual(diag["level"], 0)
+            self.assertEqual(len(leaf), 64)
+
     def test_rbb_canonical_serialization_and_validation(self) -> None:
         """Verifies RFC 8785 canonical JSON serialization and RBB event schema validation."""
         import tempfile
@@ -570,6 +609,74 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             tampered_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
             self.assertFalse(tampered_report.is_valid)
             self.assertGreater(len(tampered_report.errors), 0)
+
+    def test_rbb_verifier_detects_scope_tampering(self) -> None:
+        """
+        Verifies that RobotBlackBoxVerifier detects payload tampering even if
+        events.ndjson SHA-256 and manifest.json are maliciously recalculated.
+        Directly validates defense against unauthorized scope mutation.
+        """
+        import tempfile
+        from physical_ai_governor.rbb_contract import canonical_json, sha256_hex
+        from physical_ai_governor.rbb_recorder import RobotBlackBoxRecorder
+        from physical_ai_governor.rbb_verifier import RobotBlackBoxVerifier
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/attack_bundle"
+            recorder = RobotBlackBoxRecorder(robot_id="humanoid_scope_test", tenant_ref="tenant-test")
+            recorder.start_run(task="benign_block_handover")
+
+            pkt = self.ingestor.parse_humanoid_joint_state(
+                robot_id="humanoid_scope_test",
+                timestamp_ns=1000,
+                base_pos=(0.0, 0.0, 1.2),
+                base_vel=(0.1, 0.0, 0.0),
+                current_torques=[20.0, -15.0],
+                commanded_torques=[30.0, -25.0],
+                human_proximity=2.5,
+                battery=95.0,
+            )
+            dec = self.filter.evaluate_safety(pkt)
+            recorder.record_safety_cycle(pkt, dec)
+            recorder.close_run()
+            res = recorder.export_bundle(bundle_dir)
+
+            # Legitimate bundle must verify
+            initial_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            self.assertTrue(initial_report.is_valid)
+
+            # Attacker mutates requested_scope in proposal.recorded event
+            events_file = pathlib.Path(bundle_dir) / "events.ndjson"
+            lines = events_file.read_text().splitlines()
+            mutated_lines = []
+            mutated_count = 0
+            for line in lines:
+                evt = json.loads(line)
+                if evt.get("event_type") == "proposal.recorded":
+                    evt["payload"]["requested_scope"] = "UNAUTHORIZED_CHANGED_SCOPE"
+                    mutated_count += 1
+                mutated_lines.append(canonical_json(evt))
+            self.assertGreater(mutated_count, 0)
+
+            new_events_bytes = ("\n".join(mutated_lines) + "\n").encode("utf-8")
+            events_file.write_bytes(new_events_bytes)
+
+            # Attacker updates manifest.json with the new events_digest to bypass raw file check
+            manifest_file = pathlib.Path(bundle_dir) / "manifest.json"
+            manifest = json.loads(manifest_file.read_text())
+            manifest["events_digest"] = sha256_hex(new_events_bytes)
+            # Attacker updates manifest authentication event_digest as well
+            manifest_body = {k: v for k, v in manifest.items() if k != "authentication"}
+            manifest["authentication"]["event_digest"] = sha256_hex(canonical_json(manifest_body).encode("utf-8"))
+            manifest_file.write_bytes(canonical_json(manifest).encode("utf-8"))
+
+            # Verifier MUST catch the tampered body via recomputed event body digest
+            audit_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            self.assertFalse(audit_report.is_valid, "Verifier failed to detect tampered requested_scope payload!")
+            self.assertTrue(
+                any("BODY_TAMPERED" in err or "body digest mismatch" in err for err in audit_report.errors),
+                f"Expected BODY_TAMPERED error, got: {audit_report.errors}",
+            )
 
     def test_rbb_cli_commands(self) -> None:
         """Verifies RBB CLI recording and offline verification commands."""
