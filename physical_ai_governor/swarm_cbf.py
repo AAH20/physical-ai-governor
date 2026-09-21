@@ -36,7 +36,7 @@ class SwarmSafetyDecision:
 class SwarmControlBarrierGovernor:
     """
     Decentralized Reciprocal Control Barrier Function governor for multi-robot fleets.
-    Guarantees pairwise forward invariance for every pair of interacting robots.
+    Enforces pairwise forward invariance for every pair of interacting robots.
     """
 
     def __init__(

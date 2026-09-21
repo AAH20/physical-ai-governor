@@ -21,7 +21,7 @@ from .merkle_blackbox import MerkleBlackBoxLedger
 
 @dataclass
 class ForensicIncidentReport:
-    """Certified forensic report detailing incident timeline, causality, and statutory compliance."""
+    """Forensic flight incident report detailing incident timeline, causality, and statutory findings."""
     report_id: str
     robot_id: str
     incident_severity: str

@@ -193,10 +193,10 @@ def cmd_grc_claw_sync(args: argparse.Namespace) -> int:
 
 
 def cmd_zk_prove(args: argparse.Namespace) -> int:
-    """Generates a verifiable Zero-Knowledge (ZK) safety proof over flight logs."""
+    """Generates a blinded cryptographic commitment envelope for privacy audits."""
     from .zk_proof import ZKSafetyProver
 
-    print(f"🛡️ Generating Zero-Knowledge Safety Invariance Proof ({args.cycles} cycles)...")
+    print(f"🛡️ Generating Blinded Commitment Safety Envelope ({args.cycles} cycles)...")
     ingestor = TelemetryIngestor()
     cbf = ControlBarrierFilter()
     ledger = MerkleBlackBoxLedger()
@@ -228,7 +228,7 @@ def cmd_zk_prove(args: argparse.Namespace) -> int:
     print(f"  Cycles Proven:               {envelope.total_cycles_proven}")
     print(f"  Fiat-Shamir Challenge:       {envelope.challenge_hash[:20]}...")
     print(f"  Blinded Envelope Verified:   {is_valid}")
-    print("  Invariants Claimed (Zero Coordinate Leakage):")
+    print("  Invariants Enforced (Zero Coordinate Leakage):")
     for inv in envelope.invariants_certified:
         print(f"    • {inv}")
     print("=" * 65)
@@ -259,67 +259,117 @@ def cmd_swarm_eval(args: argparse.Namespace) -> int:
     decisions = gov.evaluate_swarm_safety(agents)
 
     print("=" * 65)
-    print("  SWARM-CBF COLLISION AVOIDANCE REPORT")
+    print("  SWARM RECIPROCAL COLLISION AVOIDANCE EVALUATION")
     print("=" * 65)
-    for agent_id, dec in decisions.items():
-        status = "SAFE_PASS" if dec.is_safe else "CBF_RECIPROCAL_INTERVENTION"
-        print(f"  [{agent_id}] -> {status}")
-        print(f"    • Filtered Velocity:   {dec.filtered_velocity}")
-        print(f"    • Min Distance:        {dec.min_inter_agent_distance_m} m")
+    print(f"  Interacting Agents:          {len(agents)}")
+    print(f"  Safety Distance Threshold:   {gov.d_safe} m")
+    for agent in agents:
+        dec = decisions[agent.agent_id]
+        print(f"  Agent {agent.agent_id}:")
+        print(f"    Commanded Velocity:        {agent.commanded_velocity_xyz}")
+        print(f"    Safe Velocity:             {dec.filtered_velocity}")
+        print(f"    Intervention Active:       {dec.intervened}")
+        print(f"    Min Pairwise Distance:     {dec.min_inter_agent_distance_m:.2f} m")
         if dec.threat_agent_ids:
-            print(f"    • Collision Threats:   {', '.join(dec.threat_agent_ids)}")
+            print(f"    Threat Agents:             {', '.join(dec.threat_agent_ids)}")
+    print("=" * 65)
+    return 0
+
+
+def cmd_ros2_cycle(args: argparse.Namespace) -> int:
+    """Executes a full ROS 2 safe telemetry cycle simulation."""
+    from .ros2_bridge import ROS2GovernorNode
+
+    print("🤖 Simulating ROS 2 Governor Node cycle...")
+    node = ROS2GovernorNode()
+    result = node.process_telemetry_step(
+        robot_id=args.robot_id,
+        joint_names=["hip_yaw", "knee_pitch"],
+        positions=[0.1, -0.4],
+        velocities=[0.5, 1.2],
+        torques=[45.0, -85.0],
+        cmd_torques=[55.0, -110.0],
+        human_distance=args.human_dist,
+    )
+
+    print("=" * 65)
+    print("  ROS 2 PHYSICAL AI GOVERNOR NODE CYCLE")
+    print("=" * 65)
+    print(f"  Robot ID:                    {args.robot_id}")
+    print(f"  Intervention Triggered:      {result['decision'].intervention_triggered}")
+    print(f"  Dispatched Status:           {result['dispatched_status']}")
+    print(f"  Audit Digest:                {result['record'].merkle_leaf_hash[:16]}...")
+    print("  Safe Joint Trajectory Published:")
+    for jn, q, v, u in zip(
+        result["safe_trajectory"].joint_names,
+        result["safe_trajectory"].positions,
+        result["safe_trajectory"].velocities,
+        result["safe_trajectory"].effort,
+    ):
+        print(f"    • {jn}: pos={q:.2f} rad, vel={v:.2f} rad/s, torque={u:.2f} Nm")
     print("=" * 65)
     return 0
 
 
 def cmd_rbb_record(args: argparse.Namespace) -> int:
-    """Records real-time physical AI telemetry into an RBB bundle."""
+    """Records streaming physical AI cycles into an RBB bundle."""
     from .rbb_recorder import RobotBlackBoxRecorder
 
-    print(f"📼 Recording Physical AI Black Box flight log ({args.cycles} cycles)...")
+    print(f"📦 Recording {args.cycles} cycles to RBB bundle: {args.out}")
+    recorder = RobotBlackBoxRecorder(robot_id=args.robot_id, tenant_ref=args.tenant_ref)
+    recorder.start_run(task="factory_collaborative_assembly")
+
     ingestor = TelemetryIngestor()
     cbf = ControlBarrierFilter()
-    recorder = RobotBlackBoxRecorder(robot_id=args.robot_id, tenant_ref=args.tenant_ref)
-    recorder.start_run(task="benign_block_handover")
 
     for i in range(args.cycles):
-        cmd_torque = [40.0, -30.0] if (i % 7 != 0) else [180.0, -210.0]
-        dist = 2.5 if (i % 5 != 0) else 1.2
+        dist = 2.5 if i < (args.cycles - 3) else 0.8
         pkt = ingestor.parse_humanoid_joint_state(
             robot_id=args.robot_id,
             timestamp_ns=i * 1_000_000,
             base_pos=(0.0, 0.0, 1.2),
-            base_vel=(0.2, 0.0, 0.0),
-            current_torques=[30.0, -20.0],
-            commanded_torques=cmd_torque,
+            base_vel=(0.1, 0.0, 0.0),
+            current_torques=[25.0, -35.0],
+            commanded_torques=[30.0, -40.0],
             human_proximity=dist,
-            battery=95.0 - (i * 0.01),
+            battery=95.0,
         )
         dec = cbf.evaluate_safety(pkt)
         recorder.record_safety_cycle(pkt, dec)
 
-    recorder.close_run()
-    result = recorder.export_bundle(args.out)
-
+    bundle_info = recorder.export_bundle(args.out)
     print("=" * 65)
     print("  ROBOT BLACK BOX (RBB) BUNDLE RECORDED")
     print("=" * 65)
-    print(f"  Run ID:                      {result['run_id']}")
-    print(f"  Bundle Directory:            {result['bundle_path']}")
-    print(f"  Total Events:                {result['total_events']}")
-    print(f"  Head Digest:                 {result['head_digest'][:16]}...")
-    print(f"  Events Digest:               {result['events_digest'][:16]}...")
-    print(f"  Checkpoints Digest:          {result['checkpoints_digest'][:16]}...")
+    print(f"  Bundle Path:                 {bundle_info['bundle_path']}")
+    print(f"  Run ID:                      {bundle_info['run_id']}")
+    print(f"  Total Events:                {bundle_info['total_events']}")
+    print(f"  Head Digest:                 {bundle_info['head_digest'][:16]}...")
+    print(f"  Events Digest:               {bundle_info['events_digest'][:16]}...")
+    print(f"  Checkpoints Digest:          {bundle_info['checkpoints_digest'][:16]}...")
     print("=" * 65)
     return 0
 
 
 def cmd_rbb_verify(args: argparse.Namespace) -> int:
-    """Audits and cryptographically verifies an on-disk RBB bundle."""
+    """Audits and cryptographically verifies an RBB flight recording bundle."""
     from .rbb_verifier import RobotBlackBoxVerifier
 
-    print(f"🔍 Verifying Robot Black Box bundle at: {args.bundle}")
-    report = RobotBlackBoxVerifier.verify_bundle(args.bundle)
+    trusted_keys = None
+    if getattr(args, "trusted_keys", None):
+        with open(args.trusted_keys, "r", encoding="utf-8") as f:
+            trusted_keys = json.load(f)
+
+    trust_mode = getattr(args, "trust_mode", "AUTHENTICATED")
+    allow_self = getattr(args, "allow_self_witness", False)
+
+    print(f"🔍 Verifying Robot Black Box bundle at: {args.bundle} (trust_mode={trust_mode})")
+    report = RobotBlackBoxVerifier.verify_bundle(
+        args.bundle,
+        trust_mode=trust_mode,
+        external_trusted_keys=trusted_keys,
+        allow_self_witness=allow_self,
+    )
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
@@ -328,14 +378,20 @@ def cmd_rbb_verify(args: argparse.Namespace) -> int:
         print("  ROBOT BLACK BOX (RBB) BUNDLE AUDIT REPORT")
         print("=" * 65)
         print(f"  Bundle Status:               {'VALID (PASSED)' if report.is_valid else 'INVALID (FAILED)'}")
+        print(f"  Trust Mode:                  {report.trust_mode}")
+        print(f"  Authenticated:               {report.is_authenticated}")
         print(f"  Run ID:                      {report.run_id}")
         print(f"  Events Verified:             {report.total_events}")
         print(f"  Checkpoints Verified:        {report.total_checkpoints}")
-        print(f"  Head Digest:                 {report.head_digest[:16]}...")
-        print(f"  Events Digest:               {report.events_digest[:16]}...")
+        print(f"  Head Digest:                 {report.head_digest[:16]}..." if report.head_digest else "  Head Digest:                 N/A")
+        print(f"  Events Digest:               {report.events_digest[:16]}..." if report.events_digest else "  Events Digest:               N/A")
         print("  Checks Passed:")
         for chk in report.checks_passed:
             print(f"    • {chk}")
+        if report.warnings:
+            print("  Warnings:")
+            for warn in report.warnings:
+                print(f"    ⚠️  {warn}")
         if report.errors:
             print("  Errors Detected:")
             for err in report.errors:
@@ -471,6 +527,20 @@ def build_parser() -> argparse.ArgumentParser:
     # rbb-verify
     p_ver = subparsers.add_parser("rbb-verify", help="Audit and verify an on-disk RBB bundle")
     p_ver.add_argument("--bundle", "-b", type=str, required=True, help="Path to RBB bundle directory")
+    p_ver.add_argument(
+        "--trust-mode",
+        type=str,
+        default="AUTHENTICATED",
+        choices=["AUTHENTICATED", "INTEGRITY_ONLY"],
+        help="Verification trust mode (default: AUTHENTICATED)",
+    )
+    p_ver.add_argument(
+        "--trusted-keys",
+        type=str,
+        default=None,
+        help="Path to trusted keys JSON file for external signature verification",
+    )
+    p_ver.add_argument("--allow-self-witness", action="store_true", help="Allow self-witnessed dev bundles")
     p_ver.add_argument("--json", action="store_true", help="Output verification report in raw JSON")
     p_ver.set_defaults(func=cmd_rbb_verify)
 
@@ -490,7 +560,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_kino.set_defaults(func=cmd_kinodynamics_eval)
 
     # zk-prove
-    p_zk = subparsers.add_parser("zk-prove", help="Generate Zero-Knowledge safety invariance proof")
+    p_zk = subparsers.add_parser("zk-prove", help="Generate blinded commitment envelope for privacy audit")
     p_zk.add_argument("--robot-id", type=str, default="humanoid_defense_01", help="Robot identifier")
     p_zk.add_argument("--cycles", type=int, default=50, help="Telemetry cycles to prove")
     p_zk.add_argument("--output", "-o", type=str, default=None, help="Output file path")

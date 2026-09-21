@@ -9,6 +9,7 @@ Used by the Control Barrier Function (CBF) safety filter for minimal-interventio
 actuator correction.
 """
 
+import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -22,6 +23,8 @@ class QPSolution:
     objective_value: float
     active_indices: List[int]
     lagrange_multipliers: List[float]
+    constraints_satisfied: bool = True
+    max_constraint_violation: float = 0.0
 
 
 def _mat_vec_mul(A: List[List[float]], x: List[float]) -> List[float]:
@@ -98,6 +101,56 @@ class ActiveSetQPSolver:
             s.t. A u <= b, u_min <= u <= u_max
         """
         n = len(q)
+        if n == 0:
+            return QPSolution(
+                u=[],
+                converged=False,
+                iterations=0,
+                objective_value=float("inf"),
+                active_indices=[],
+                lagrange_multipliers=[],
+                constraints_satisfied=False,
+                max_constraint_violation=float("inf"),
+            )
+
+        # Validate finite numerical values
+        def _has_nonfinite(arr) -> bool:
+            for item in arr:
+                if isinstance(item, (list, tuple)):
+                    if _has_nonfinite(item):
+                        return True
+                elif not isinstance(item, (int, float)) or math.isnan(item) or math.isinf(item):
+                    return True
+            return False
+
+        if _has_nonfinite(P) or _has_nonfinite(q) or (A and _has_nonfinite(A)) or (b and _has_nonfinite(b)) or (u_min and _has_nonfinite(u_min)) or (u_max and _has_nonfinite(u_max)):
+            return QPSolution(
+                u=[0.0] * n,
+                converged=False,
+                iterations=0,
+                objective_value=float("inf"),
+                active_indices=[],
+                lagrange_multipliers=[],
+                constraints_satisfied=False,
+                max_constraint_violation=float("inf"),
+            )
+
+        # Check for contradictory box bounds (u_min[i] > u_max[i])
+        if u_min is not None and u_max is not None:
+            for i in range(n):
+                if u_min[i] > u_max[i] + self.tol:
+                    # Infeasible: contradictory upper/lower bounds
+                    return QPSolution(
+                        u=[round((u_min[i] + u_max[i]) / 2.0, 6) for i in range(n)],
+                        converged=False,
+                        iterations=0,
+                        objective_value=float("inf"),
+                        active_indices=[],
+                        lagrange_multipliers=[],
+                        constraints_satisfied=False,
+                        max_constraint_violation=round(u_min[i] - u_max[i], 6),
+                    )
+
         A_all: List[List[float]] = []
         b_all: List[float] = []
 
@@ -231,13 +284,25 @@ class ActiveSetQPSolver:
                 if blocking_constraint != -1 and alpha < 1.0 - self.tol:
                     active_set.append(blocking_constraint)
 
+        # Verify constraint residuals over all constraints
+        max_violation = 0.0
+        for j in range(m):
+            viol = _dot(A_all[j], u) - b_all[j]
+            if viol > max_violation:
+                max_violation = viol
+
+        constraints_satisfied = (max_violation <= self.tol * 10.0)
+        converged = (iterations < self.max_iterations) and constraints_satisfied
+
         obj = 0.5 * sum(u[i] * sum(P[i][j] * u[j] for j in range(n)) for i in range(n)) + _dot(q, u)
 
         return QPSolution(
             u=[round(x, 6) for x in u],
-            converged=(iterations < self.max_iterations),
+            converged=converged,
             iterations=iterations,
-            objective_value=round(obj, 6),
+            objective_value=round(obj, 6) if not math.isnan(obj) else float("inf"),
             active_indices=sorted(active_set),
             lagrange_multipliers=[round(x, 6) for x in lagrange_mults],
+            constraints_satisfied=constraints_satisfied,
+            max_constraint_violation=round(max_violation, 6),
         )

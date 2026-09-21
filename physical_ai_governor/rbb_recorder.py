@@ -45,6 +45,8 @@ class RobotBlackBoxRecorder:
         producer_id: str = "producer-governor",
         signing_key_id: str = "prod-key-01",
         signing_secret: Optional[str] = None,
+        witness_key_id: str = "witness-local-01",
+        witness_secret: Optional[str] = None,
     ) -> None:
         self.robot_id = robot_id
         self.run_id = run_id or f"run-{int(time.time())}-{secrets.token_hex(4)}"
@@ -55,6 +57,8 @@ class RobotBlackBoxRecorder:
         self.boot_id = f"boot-{secrets.token_hex(8)}"
         self.signing_key_id = signing_key_id
         self.signing_secret = (signing_secret or secrets.token_hex(32)).encode("utf-8")
+        self.witness_key_id = witness_key_id
+        self.witness_secret = (witness_secret or secrets.token_hex(32)).encode("utf-8")
 
         self.config_digest = sha256_hex(b"default_rbb_cbf_config")
         self.policy_digest = sha256_hex(b"iso10218_cbf_safety_policy")
@@ -67,8 +71,28 @@ class RobotBlackBoxRecorder:
         self.is_open = False
         self.is_closed = False
 
-    def _sign_record(self, body: Dict[str, Any], domain: str) -> Dict[str, Any]:
+    def get_trusted_keys(self) -> Dict[str, Any]:
+        """Returns trusted signing secrets for external verifier validation."""
+        return {
+            "producers": {
+                self.signing_key_id: self.signing_secret.decode("utf-8"),
+            },
+            "witnesses": {
+                self.witness_key_id: self.witness_secret.decode("utf-8"),
+            },
+        }
+
+    def _sign_record(
+        self,
+        body: Dict[str, Any],
+        domain: str,
+        key_id: Optional[str] = None,
+        secret: Optional[bytes] = None,
+    ) -> Dict[str, Any]:
         """Signs an RBB record body using domain separation prefix."""
+        active_key_id = key_id or self.signing_key_id
+        active_secret = secret if secret is not None else self.signing_secret
+
         body_canon = canonical_json(body)
         body_bytes = body_canon.encode("utf-8")
         event_digest = sha256_hex(body_bytes)
@@ -78,14 +102,14 @@ class RobotBlackBoxRecorder:
         msg = domain_prefix + bytes.fromhex(event_digest)
 
         # Generate HMAC-SHA256 signature representation for portable bundle
-        sig_bytes = hmac.new(self.signing_secret, msg, hashlib.sha256).digest()
+        sig_bytes = hmac.new(active_secret, msg, hashlib.sha256).digest()
         # Pad or represent as 64-byte signature string (or base64 encoded)
         sig_b64 = base64.b64encode(sig_bytes * 2).decode("ascii")  # 64 bytes for ed25519 length parity
 
         signed_record = dict(body)
         signed_record["authentication"] = {
             "algorithm": "sha256-hmac",
-            "key_id": self.signing_key_id,
+            "key_id": active_key_id,
             "event_digest": event_digest,
             "signature": sig_b64,
         }
@@ -397,9 +421,14 @@ class RobotBlackBoxRecorder:
             "previous_checkpoint_digest": prior_cp_digest,
             "created_at": now,
         }
-        signed_cp = self._sign_record(cp_body, DOMAINS["CHECKPOINT"])
+        signed_cp = self._sign_record(
+            cp_body,
+            DOMAINS["CHECKPOINT"],
+            key_id=self.signing_key_id,
+            secret=self.signing_secret,
+        )
 
-        # Witness receipt
+        # Witness receipt signed by independent witness
         witness_body = {
             "run_id": self.run_id,
             "sequence": len(self.events),
@@ -407,7 +436,12 @@ class RobotBlackBoxRecorder:
             "checkpoint_digest": signed_cp["authentication"]["event_digest"],
             "witnessed_at": now,
         }
-        signed_witness = self._sign_record(witness_body, DOMAINS["WITNESS"])
+        signed_witness = self._sign_record(
+            witness_body,
+            DOMAINS["WITNESS"],
+            key_id=self.witness_key_id,
+            secret=self.witness_secret,
+        )
 
         cp_item = {
             "checkpoint": signed_cp,
@@ -532,10 +566,10 @@ class RobotBlackBoxRecorder:
             },
             "authorities": {},
             "witnesses": {
-                self.signing_key_id: {
-                    "key_id": self.signing_key_id,
+                self.witness_key_id: {
+                    "key_id": self.witness_key_id,
                     "algorithm": "sha256-hmac",
-                    "public_key": base64.b64encode(self.signing_secret[:16]).decode("ascii"),
+                    "public_key": base64.b64encode(self.witness_secret[:16]).decode("ascii"),
                     "revoked": False,
                 }
             },

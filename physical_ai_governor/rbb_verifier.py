@@ -7,6 +7,7 @@ Performs offline, deterministic forensic audit over .rbb bundles:
     3. Manifest digest consistency (events.ndjson & checkpoints.json)
     4. Causal DAG acyclicity & reference integrity
     5. Local witness consensus and latest-heads alignment
+    6. External cryptographic signature authentication (fail-closed)
 Pure Python 3.10+ standard library (zero external dependencies).
 """
 
@@ -15,7 +16,7 @@ import hashlib
 import hmac
 import json
 import pathlib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from .rbb_contract import (
@@ -40,41 +41,120 @@ class RBBVerificationReport:
     events_digest: str
     checks_passed: List[str]
     errors: List[str]
+    trust_mode: str = "AUTHENTICATED"
+    is_authenticated: bool = False
+    warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def _verify_hmac_sig(secret: bytes, domain: str, event_digest: str, sig_b64: str) -> bool:
+    """Verifies an HMAC-SHA256 signature under domain separation in constant time."""
+    domain_prefix = f"RBB-{domain}-v1\0".encode("utf-8")
+    msg = domain_prefix + bytes.fromhex(event_digest)
+    sig_bytes = hmac.new(secret, msg, hashlib.sha256).digest()
+    expected_sig = base64.b64encode(sig_bytes * 2).decode("ascii")
+    return hmac.compare_digest(sig_b64, expected_sig)
 
 
 class RobotBlackBoxVerifier:
     """
     Independent bundle verifier for Robot Black Box (.rbb) evidence records.
     Requires no runtime daemon, node dependencies, or remote network access.
+    Implements fail-closed external authentication to prevent self-proving rewrites.
     """
 
     @classmethod
     def verify_bundle(
         cls,
         bundle_dir: str,
-        signing_secret: Optional[bytes] = None,
+        trust_mode: str = "AUTHENTICATED",
+        external_trusted_keys: Optional[Dict[str, Any]] = None,
+        signing_secret: Optional[Any] = None,
+        allow_self_witness: bool = False,
     ) -> RBBVerificationReport:
         """
         Audits an on-disk RBB bundle directory.
-        Cryptographically verifies:
-            1. Manifest RFC 8785 canonical format and body digest
-            2. Trust profile (trust.json) and key validity / non-revocation
-            3. events.ndjson file SHA-256 matches manifest
-            4. Sequential hash chaining (previous_digest == prior event_digest)
-            5. Recomputed event body digest matches authenticated event_digest (RFC 8785)
-               (Detects payload mutations, unauthorized scope alterations, and spoofing)
-            6. Manifest head_digest matches final event digest
-            7. Checkpoint & witness receipt body digests and hash chain
-            8. Witness latest-heads consensus matches head_digest
-            9. Optional HMAC signature verification if signing_secret provided
-        Returns an RBBVerificationReport with comprehensive check diagnostics.
+
+        Trust Modes:
+            - "AUTHENTICATED" (default, fail-closed):
+              Requires out-of-band external trusted keys. Verifies all cryptographic signatures
+              on events, manifest, checkpoints, and witness receipts against external keys.
+              Enforces independent witness keys (witness key != producer key).
+              Fails closed if external trusted keys are missing or invalid.
+            - "INTEGRITY_ONLY" (explicit opt-in):
+              Audits internal structural coherence: canonical JSON, SHA-256 hash chains,
+              DAG causal references, and manifest digest consistency without authenticating
+              provenance against external trusted keys. Sets is_authenticated=False.
         """
         bundle_path = pathlib.Path(bundle_dir)
         checks_passed: List[str] = []
         errors: List[str] = []
+        warnings: List[str] = []
+
+        norm_mode = trust_mode.strip().upper()
+        if norm_mode not in ("AUTHENTICATED", "INTEGRITY_ONLY"):
+            return RBBVerificationReport(
+                bundle_path=str(bundle_path),
+                run_id="unknown",
+                is_valid=False,
+                total_events=0,
+                total_checkpoints=0,
+                head_digest="",
+                events_digest="",
+                checks_passed=[],
+                errors=[f"Invalid trust_mode '{trust_mode}'. Must be 'AUTHENTICATED' or 'INTEGRITY_ONLY'."],
+                trust_mode=norm_mode,
+                is_authenticated=False,
+                warnings=[],
+            )
+
+        # Parse external trusted keys
+        trusted_producers: Dict[str, bytes] = {}
+        trusted_witnesses: Dict[str, bytes] = {}
+        if external_trusted_keys:
+            if "producers" in external_trusted_keys or "witnesses" in external_trusted_keys:
+                for k, v in external_trusted_keys.get("producers", {}).items():
+                    trusted_producers[k] = v.encode("utf-8") if isinstance(v, str) else v
+                for k, v in external_trusted_keys.get("witnesses", {}).items():
+                    trusted_witnesses[k] = v.encode("utf-8") if isinstance(v, str) else v
+            else:
+                for k, v in external_trusted_keys.items():
+                    sec = v.encode("utf-8") if isinstance(v, str) else v
+                    trusted_producers[k] = sec
+                    trusted_witnesses[k] = sec
+
+        if signing_secret:
+            sec_bytes = signing_secret.encode("utf-8") if isinstance(signing_secret, str) else signing_secret
+            trusted_producers["_fallback_"] = sec_bytes
+
+        # Fail-closed check for AUTHENTICATED mode
+        if norm_mode == "AUTHENTICATED" and not trusted_producers and not trusted_witnesses:
+            return RBBVerificationReport(
+                bundle_path=str(bundle_path.resolve()) if bundle_path.exists() else str(bundle_path),
+                run_id="unknown",
+                is_valid=False,
+                total_events=0,
+                total_checkpoints=0,
+                head_digest="",
+                events_digest="",
+                checks_passed=[],
+                errors=[
+                    "AUTHENTICATION_REQUIRED: No external trusted keys provided for AUTHENTICATED trust mode. "
+                    "The bundle cannot be verified for provenance without out-of-band trusted producer/witness keys. "
+                    "To verify internal hash-chain coherence only, explicitly specify trust_mode='INTEGRITY_ONLY'."
+                ],
+                trust_mode="AUTHENTICATED",
+                is_authenticated=False,
+                warnings=[],
+            )
+
+        if norm_mode == "INTEGRITY_ONLY":
+            warnings.append(
+                "INTEGRITY_ONLY mode: Verified internal SHA-256 hash chains, DAG causal references, "
+                "and canonical JSON bodies, but provenance and signatures are NOT authenticated against external trusted keys."
+            )
 
         # 1. Check directory & required files
         if not bundle_path.exists() or not bundle_path.is_dir():
@@ -88,6 +168,9 @@ class RobotBlackBoxVerifier:
                 events_digest="",
                 checks_passed=[],
                 errors=[f"Bundle directory does not exist: {bundle_dir}"],
+                trust_mode=norm_mode,
+                is_authenticated=False,
+                warnings=warnings,
             )
 
         required_files = [
@@ -113,10 +196,14 @@ class RobotBlackBoxVerifier:
                 events_digest="",
                 checks_passed=[],
                 errors=errors,
+                trust_mode=norm_mode,
+                is_authenticated=False,
+                warnings=warnings,
             )
 
         # 2. Trust Profile Verification
         producers: Dict[str, Any] = {}
+        witnesses: Dict[str, Any] = {}
         try:
             trust_bytes = (bundle_path / "trust.json").read_bytes()
             trust = json.loads(trust_bytes)
@@ -126,6 +213,16 @@ class RobotBlackBoxVerifier:
             else:
                 checks_passed.append("trust_canonical_json_valid")
             producers = trust.get("producers", {})
+            witnesses = trust.get("witnesses", {})
+
+            # Check independent witness rule in trust configuration
+            common_keys = set(producers.keys()) & set(witnesses.keys())
+            if common_keys and not allow_self_witness:
+                msg = f"INDEPENDENT_WITNESS_REQUIRED: Key {common_keys} configured as both producer and witness."
+                if norm_mode == "AUTHENTICATED":
+                    errors.append(msg)
+                else:
+                    warnings.append(msg)
         except Exception as exc:
             errors.append(f"Failed parsing trust.json: {exc}")
 
@@ -148,6 +245,7 @@ class RobotBlackBoxVerifier:
             # Recompute and verify manifest body digest
             manifest_body = {k: v for k, v in manifest.items() if k != "authentication"}
             recomputed_manifest_digest = sha256_hex(canonical_json(manifest_body).encode("utf-8"))
+
             manifest_auth = manifest.get("authentication", {})
             if manifest_auth:
                 auth_manifest_digest = manifest_auth.get("event_digest", "")
@@ -162,15 +260,17 @@ class RobotBlackBoxVerifier:
                 if m_key_id in producers and producers[m_key_id].get("revoked", False):
                     errors.append(f"Manifest signed by revoked key_id: '{m_key_id}'")
 
-                if signing_secret:
-                    m_domain_prefix = b"RBB-MANIFEST-v1\0"
-                    m_msg = m_domain_prefix + bytes.fromhex(auth_manifest_digest)
-                    m_sig_bytes = hmac.new(signing_secret, m_msg, hashlib.sha256).digest()
-                    expected_m_sig = base64.b64encode(m_sig_bytes * 2).decode("ascii")
-                    if manifest_auth.get("signature") != expected_m_sig:
-                        errors.append("Manifest signature verification failed")
+                # External signature authentication
+                if norm_mode == "AUTHENTICATED":
+                    m_sec = trusted_producers.get(m_key_id) or trusted_producers.get("_fallback_")
+                    if not m_sec:
+                        errors.append(f"Manifest signed by untrusted or missing key_id: '{m_key_id}'")
                     else:
-                        checks_passed.append("manifest_signature_verified")
+                        m_sig = manifest_auth.get("signature", "")
+                        if not _verify_hmac_sig(m_sec, DOMAINS["MANIFEST"], auth_manifest_digest, m_sig):
+                            errors.append("Manifest signature verification failed against external trusted key")
+                        else:
+                            checks_passed.append("manifest_signature_authenticated")
         except Exception as exc:
             errors.append(f"Failed parsing manifest.json: {exc}")
             return RBBVerificationReport(
@@ -183,6 +283,9 @@ class RobotBlackBoxVerifier:
                 events_digest="",
                 checks_passed=checks_passed,
                 errors=errors,
+                trust_mode=norm_mode,
+                is_authenticated=False,
+                warnings=warnings,
             )
 
         # 4. Events.ndjson Raw Digest Verification
@@ -237,14 +340,15 @@ class RobotBlackBoxVerifier:
                 if evt_key_id in producers and producers[evt_key_id].get("revoked", False):
                     errors.append(f"Event {i+1} signed by revoked key_id: '{evt_key_id}'")
 
-                # Optional HMAC signature verification
-                if signing_secret and auth_digest:
-                    e_domain_prefix = b"RBB-EVENT-v1\0"
-                    e_msg = e_domain_prefix + bytes.fromhex(auth_digest)
-                    e_sig_bytes = hmac.new(signing_secret, e_msg, hashlib.sha256).digest()
-                    expected_e_sig = base64.b64encode(e_sig_bytes * 2).decode("ascii")
-                    if auth.get("signature") != expected_e_sig:
-                        errors.append(f"Event {i+1} signature verification failed")
+                # Signature verification
+                if norm_mode == "AUTHENTICATED":
+                    e_sec = trusted_producers.get(evt_key_id) or trusted_producers.get("_fallback_")
+                    if not e_sec:
+                        errors.append(f"Event {i+1} signed by untrusted producer key_id: '{evt_key_id}'")
+                    else:
+                        e_sig = auth.get("signature", "")
+                        if not _verify_hmac_sig(e_sec, DOMAINS["EVENT"], auth_digest, e_sig):
+                            errors.append(f"Event {i+1} signature verification failed against external trusted key")
 
                 # Sequence check
                 if evt.get("sequence") != i + 1:
@@ -305,7 +409,8 @@ class RobotBlackBoxVerifier:
                 # Verify checkpoint body digest
                 cp_body = {k: v for k, v in cp.items() if k != "authentication"}
                 recomputed_cp_digest = sha256_hex(canonical_json(cp_body).encode("utf-8"))
-                cp_auth_digest = cp.get("authentication", {}).get("event_digest")
+                cp_auth = cp.get("authentication", {})
+                cp_auth_digest = cp_auth.get("event_digest", "")
                 if recomputed_cp_digest != cp_auth_digest:
                     errors.append(
                         f"Checkpoint {j+1} body digest mismatch (CHECKPOINT_TAMPERED): recomputed '{recomputed_cp_digest}' != authenticated '{cp_auth_digest}'"
@@ -314,7 +419,8 @@ class RobotBlackBoxVerifier:
                 # Verify receipt body digest
                 rc_body = {k: v for k, v in receipt.items() if k != "authentication"}
                 recomputed_rc_digest = sha256_hex(canonical_json(rc_body).encode("utf-8"))
-                rc_auth_digest = receipt.get("authentication", {}).get("event_digest")
+                rc_auth = receipt.get("authentication", {})
+                rc_auth_digest = rc_auth.get("event_digest", "")
                 if recomputed_rc_digest != rc_auth_digest:
                     errors.append(
                         f"Checkpoint receipt {j+1} body digest mismatch (WITNESS_TAMPERED): recomputed '{recomputed_rc_digest}' != authenticated '{rc_auth_digest}'"
@@ -332,10 +438,37 @@ class RobotBlackBoxVerifier:
                         errors.append(f"Checkpoint {j+1} head_digest does not match event sequence {cp_seq}")
 
                 # Receipt alignment
-                if receipt.get("checkpoint_digest") != cp["authentication"]["event_digest"]:
+                if receipt.get("checkpoint_digest") != cp_auth_digest:
                     errors.append(f"Checkpoint {j+1} receipt does not match checkpoint digest")
 
-                prior_cp_digest = cp["authentication"]["event_digest"]
+                # Check signatures in AUTHENTICATED mode
+                if norm_mode == "AUTHENTICATED":
+                    cp_key_id = cp_auth.get("key_id", "")
+                    cp_sec = trusted_producers.get(cp_key_id) or trusted_producers.get("_fallback_")
+                    if not cp_sec:
+                        errors.append(f"Checkpoint {j+1} signed by untrusted producer key_id: '{cp_key_id}'")
+                    else:
+                        cp_sig = cp_auth.get("signature", "")
+                        if not _verify_hmac_sig(cp_sec, DOMAINS["CHECKPOINT"], cp_auth_digest, cp_sig):
+                            errors.append(f"Checkpoint {j+1} signature verification failed against external trusted key")
+
+                    rc_key_id = rc_auth.get("key_id", "")
+                    # Independent witness check: witness key must not equal checkpoint producer key
+                    if rc_key_id == cp_key_id and not allow_self_witness:
+                        errors.append(
+                            f"INDEPENDENT_WITNESS_REQUIRED: Checkpoint {j+1} receipt signed with producer key '{rc_key_id}'. "
+                            "Witness must possess an independent key identity."
+                        )
+
+                    rc_sec = trusted_witnesses.get(rc_key_id) or trusted_witnesses.get("_fallback_")
+                    if not rc_sec:
+                        errors.append(f"Checkpoint receipt {j+1} signed by untrusted witness key_id: '{rc_key_id}'")
+                    else:
+                        rc_sig = rc_auth.get("signature", "")
+                        if not _verify_hmac_sig(rc_sec, DOMAINS["WITNESS"], rc_auth_digest, rc_sig):
+                            errors.append(f"Checkpoint receipt {j+1} witness signature verification failed against external trusted key")
+
+                prior_cp_digest = cp_auth_digest
 
             if not any("Checkpoint" in err for err in errors):
                 checks_passed.append("checkpoints_chain_valid")
@@ -350,12 +483,18 @@ class RobotBlackBoxVerifier:
                 if head_receipt.get("head_digest") != manifest_head_digest:
                     errors.append("Witness latest head_digest does not match manifest head_digest")
                 else:
-                    checks_passed.append("witness_consensus_head_verified")
+                    if norm_mode == "AUTHENTICATED":
+                        checks_passed.append("witness_consensus_head_verified")
+                        checks_passed.append("external_cryptographic_signatures_authenticated")
+                    else:
+                        checks_passed.append("internal_witness_latest_head_matched")
 
         except Exception as exc:
             errors.append(f"Checkpoints/witness verification failed: {exc}")
 
         is_valid = (len(errors) == 0)
+        is_auth = is_valid and (norm_mode == "AUTHENTICATED")
+
         return RBBVerificationReport(
             bundle_path=str(bundle_path.resolve()),
             run_id=run_id,
@@ -366,4 +505,7 @@ class RobotBlackBoxVerifier:
             events_digest=actual_events_digest,
             checks_passed=checks_passed,
             errors=errors,
+            trust_mode=norm_mode,
+            is_authenticated=is_auth,
+            warnings=warnings,
         )

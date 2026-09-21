@@ -432,8 +432,8 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         self.assertEqual(len(res["leaf_hash"]), 64)
         self.assertEqual(server.total_processed_packets, 1)
 
-    def test_zk_safety_prover_and_verifier(self) -> None:
-        """Verifies zero-knowledge safety invariance proof generation and non-disclosure."""
+    def test_blinded_safety_prover_and_verifier(self) -> None:
+        """Verifies blinded cryptographic commitment envelope generation and verification."""
         from physical_ai_governor.zk_proof import ZKSafetyProver
 
         pkt = self.ingestor.parse_humanoid_joint_state(
@@ -460,8 +460,8 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         tampered_env.challenge_hash = "0" * 64
         self.assertFalse(ZKSafetyProver.verify_zk_proof(tampered_env))
 
-    def test_tpm2_hardware_silicon_attestation(self) -> None:
-        """Verifies TPM 2.0 PCR register measurement and hardware quote verification."""
+    def test_simulated_tpm_attestation(self) -> None:
+        """Verifies simulated TPM 2.0 PCR register measurement and synthetic quote verification."""
         from physical_ai_governor.hardware_tpm import TPM2HardwareAttestor
 
         tpm = TPM2HardwareAttestor(silicon_chip_id="JETSON-ORIN-TEST")
@@ -594,19 +594,41 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             self.assertEqual(res["run_id"], recorder.run_id)
             self.assertGreater(res["total_events"], 10)
 
-            # Audit valid bundle
-            report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            # 1. Audit in fail-closed default mode WITHOUT keys -> fails closed
+            unauth_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            self.assertFalse(unauth_report.is_valid)
+            self.assertFalse(unauth_report.is_authenticated)
+            self.assertTrue(any("AUTHENTICATION_REQUIRED" in err for err in unauth_report.errors))
+
+            # 2. Audit in INTEGRITY_ONLY mode -> passes internal coherence, unauthenticated
+            integ_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir, trust_mode="INTEGRITY_ONLY")
+            self.assertTrue(integ_report.is_valid, f"Integrity report errors: {integ_report.errors}")
+            self.assertFalse(integ_report.is_authenticated)
+            self.assertIn("events_cryptographic_hash_chain_valid", integ_report.checks_passed)
+
+            # 3. Audit in AUTHENTICATED mode with external trusted keys -> fully authenticates
+            report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=recorder.get_trusted_keys(),
+            )
             self.assertTrue(report.is_valid, f"Expected valid bundle, got errors: {report.errors}")
+            self.assertTrue(report.is_authenticated)
             self.assertEqual(report.total_events, res["total_events"])
             self.assertIn("events_cryptographic_hash_chain_valid", report.checks_passed)
             self.assertIn("witness_consensus_head_verified", report.checks_passed)
+            self.assertIn("external_cryptographic_signatures_authenticated", report.checks_passed)
 
             # Test detection of tampered bundle (flip a byte in events.ndjson)
             events_file = pathlib.Path(bundle_dir) / "events.ndjson"
             raw = events_file.read_bytes()
             events_file.write_bytes(raw[:-10] + b"tampered!!\n")
 
-            tampered_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            tampered_report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=recorder.get_trusted_keys(),
+            )
             self.assertFalse(tampered_report.is_valid)
             self.assertGreater(len(tampered_report.errors), 0)
 
@@ -641,8 +663,12 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             recorder.close_run()
             res = recorder.export_bundle(bundle_dir)
 
-            # Legitimate bundle must verify
-            initial_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            # Legitimate bundle must verify with external keys
+            initial_report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=recorder.get_trusted_keys(),
+            )
             self.assertTrue(initial_report.is_valid)
 
             # Attacker mutates requested_scope in proposal.recorded event
@@ -665,13 +691,15 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             manifest_file = pathlib.Path(bundle_dir) / "manifest.json"
             manifest = json.loads(manifest_file.read_text())
             manifest["events_digest"] = sha256_hex(new_events_bytes)
-            # Attacker updates manifest authentication event_digest as well
             manifest_body = {k: v for k, v in manifest.items() if k != "authentication"}
             manifest["authentication"]["event_digest"] = sha256_hex(canonical_json(manifest_body).encode("utf-8"))
             manifest_file.write_bytes(canonical_json(manifest).encode("utf-8"))
 
             # Verifier MUST catch the tampered body via recomputed event body digest
-            audit_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            audit_report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="INTEGRITY_ONLY",
+            )
             self.assertFalse(audit_report.is_valid, "Verifier failed to detect tampered requested_scope payload!")
             self.assertTrue(
                 any("BODY_TAMPERED" in err or "body digest mismatch" in err for err in audit_report.errors),
@@ -688,14 +716,210 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             ret_rec = main(["rbb-record", "--robot-id", "humanoid_cli", "--cycles", "3", "--out", bundle_dir])
             self.assertEqual(ret_rec, 0)
 
-            ret_ver = main(["rbb-verify", "--bundle", bundle_dir, "--json"])
-            self.assertEqual(ret_ver, 0)
+            # Integrity-only check passes without keys
+            ret_ver_integ = main(["rbb-verify", "--bundle", bundle_dir, "--trust-mode", "INTEGRITY_ONLY", "--json"])
+            self.assertEqual(ret_ver_integ, 0)
+
+            # Default authenticated check fails closed without external keys
+            ret_ver_auth = main(["rbb-verify", "--bundle", bundle_dir, "--json"])
+            self.assertEqual(ret_ver_auth, 2)
 
             ret_inc = main(["incident-report", "--bundle", bundle_dir, "--json"])
             self.assertEqual(ret_inc, 0)
 
         ret_kino = main(["kinodynamics-eval", "--joint1", "0.5", "--joint2", "0.4", "--joint3", "-0.2"])
         self.assertEqual(ret_kino, 0)
+
+    def test_rbb_verifier_rejects_fully_rewritten_bundle_without_external_trust(self) -> None:
+        """
+        Adversarial audit check:
+        Attacker takes an RBB bundle, generates fresh keys, replaces all signatures,
+        and recomputes all hash chains.
+        Verifier MUST reject the bundle in fail-closed default mode, and MUST reject
+        it when audited against the legitimate operator's external trusted keys.
+        """
+        import tempfile
+        from physical_ai_governor.rbb_contract import canonical_json, sha256_hex
+        from physical_ai_governor.rbb_recorder import RobotBlackBoxRecorder
+        from physical_ai_governor.rbb_verifier import RobotBlackBoxVerifier
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/rewritten_bundle"
+            recorder = RobotBlackBoxRecorder(robot_id="drone_target", tenant_ref="tenant-sky")
+            recorder.start_run(task="delivery_flight")
+            pkt = self.ingestor.parse_humanoid_joint_state(
+                robot_id="drone_target",
+                timestamp_ns=1000,
+                base_pos=(0.0, 0.0, 1.2),
+                base_vel=(2.0, 0.0, 0.0),
+                current_torques=[10.0],
+                commanded_torques=[10.0],
+                human_proximity=10.0,
+                battery=90.0,
+            )
+            dec = self.filter.evaluate_safety(pkt)
+            recorder.record_safety_cycle(pkt, dec)
+            recorder.close_run()
+            recorder.export_bundle(bundle_dir)
+
+            legit_keys = recorder.get_trusted_keys()
+
+            # Attacker creates a fresh attacker-controlled recorder and overwrites trust.json
+            attacker_recorder = RobotBlackBoxRecorder(
+                robot_id="drone_target",
+                signing_key_id="attacker-key-99",
+                witness_key_id="attacker-witness-99",
+            )
+
+            # Default verify without keys -> FAIL CLOSED
+            unauth_report = RobotBlackBoxVerifier.verify_bundle(bundle_dir)
+            self.assertFalse(unauth_report.is_valid)
+            self.assertFalse(unauth_report.is_authenticated)
+            self.assertTrue(any("AUTHENTICATION_REQUIRED" in e for e in unauth_report.errors))
+
+            # Attacker rewrites manifest to be signed by attacker-key-99
+            manifest_file = pathlib.Path(bundle_dir) / "manifest.json"
+            manifest = json.loads(manifest_file.read_text())
+            manifest_body = {k: v for k, v in manifest.items() if k != "authentication"}
+            signed_manifest = attacker_recorder._sign_record(manifest_body, "MANIFEST")
+            manifest_file.write_bytes(canonical_json(signed_manifest).encode("utf-8"))
+
+            # Audited against legitimate operator keys -> REJECTED (untrusted key)
+            audit_report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=legit_keys,
+            )
+            self.assertFalse(audit_report.is_valid)
+            self.assertFalse(audit_report.is_authenticated)
+            self.assertTrue(any("untrusted or missing key_id" in e or "signature verification failed" in e for e in audit_report.errors))
+
+    def test_rbb_verifier_rejects_self_signed_witness(self) -> None:
+        """Verifies that bundles where witness key equals producer key are rejected unless explicitly allowed."""
+        import tempfile
+        from physical_ai_governor.rbb_recorder import RobotBlackBoxRecorder
+        from physical_ai_governor.rbb_verifier import RobotBlackBoxVerifier
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/self_witness_bundle"
+            # Self-signed recorder (producer key == witness key)
+            recorder = RobotBlackBoxRecorder(
+                robot_id="bot_self",
+                signing_key_id="common-key-01",
+                witness_key_id="common-key-01",
+            )
+            recorder.start_run(task="self_witness_test")
+            pkt = self.ingestor.parse_humanoid_joint_state(
+                robot_id="bot_self",
+                timestamp_ns=1000,
+                base_pos=(0.0, 0.0, 1.0),
+                base_vel=(0.0, 0.0, 0.0),
+                current_torques=[10.0],
+                commanded_torques=[10.0],
+                human_proximity=3.0,
+                battery=90.0,
+            )
+            dec = self.filter.evaluate_safety(pkt)
+            recorder.record_safety_cycle(pkt, dec)
+            recorder.close_run()
+            recorder.export_bundle(bundle_dir)
+
+            report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=recorder.get_trusted_keys(),
+                allow_self_witness=False,
+            )
+            self.assertFalse(report.is_valid)
+            self.assertTrue(any("INDEPENDENT_WITNESS_REQUIRED" in e for e in report.errors))
+
+    def test_qp_solver_detects_contradictory_infeasibility(self) -> None:
+        """Verifies that ActiveSetQPSolver identifies contradictory/infeasible constraints and returns converged=False."""
+        from physical_ai_governor.qp_solver import ActiveSetQPSolver
+
+        solver = ActiveSetQPSolver()
+        # Contradictory box constraints: u_min=100, u_max=-100
+        sol = solver.solve(
+            P=[[1.0]],
+            q=[0.0],
+            u_min=[100.0],
+            u_max=[-100.0],
+        )
+        self.assertFalse(sol.converged)
+        self.assertFalse(sol.constraints_satisfied)
+
+        # Contradictory linear inequality: u >= 10 and u <= -10
+        # -u <= -10  (u >= 10)
+        #  u <= -10
+        sol_ineq = solver.solve(
+            P=[[1.0]],
+            q=[0.0],
+            A=[[-1.0], [1.0]],
+            b=[-10.0, -10.0],
+        )
+        self.assertFalse(sol_ineq.converged)
+        self.assertFalse(sol_ineq.constraints_satisfied)
+
+    def test_qp_safety_filter_failsafe_on_infeasible_constraints(self) -> None:
+        """Verifies that infeasible CBF/box constraints trigger a fail-safe protective stop."""
+        from physical_ai_governor.control_barrier import QPSafetyFilter
+
+        cbf_qp = QPSafetyFilter(min_human_distance_m=1.50)
+        # Construct telemetry packet at proximity with velocity towards hazard
+        pkt = self.ingestor.parse_humanoid_joint_state(
+            robot_id="infeasible_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 0.0),
+            base_vel=(10.0, 0.0, 0.0),
+            current_torques=[50.0],
+            commanded_torques=[50.0],
+            human_proximity=1.50,  # h_prox = 0
+            battery=90.0,
+        )
+        # Contradictory control matrix: row 0 forces u >= 10, row 1 forces u <= -10
+        control_matrix_infeasible = [
+            [1.0],   # -1 * u <= -10 => u >= 10
+            [-1.0],  #  1 * u <= -10 => u <= -10
+        ]
+        dec = cbf_qp.evaluate_safety_qp(pkt, control_matrix_g=control_matrix_infeasible)
+        self.assertEqual(dec.decision_status, "INFEASIBLE")
+        self.assertTrue(dec.intervention_triggered)
+        self.assertEqual(dec.filtered_command, [0.0])  # Protective stop commanded
+
+    def test_qp_safety_filter_handles_invalid_nan_inputs(self) -> None:
+        """Verifies that NaN and Inf control inputs trigger a protective stop with INVALID_INPUT status."""
+        from physical_ai_governor.control_barrier import QPSafetyFilter
+
+        cbf_qp = QPSafetyFilter()
+        pkt_nan = self.ingestor.parse_humanoid_joint_state(
+            robot_id="nan_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 1.0),
+            base_vel=(0.0, 0.0, 0.0),
+            current_torques=[10.0],
+            commanded_torques=[float("nan")],
+            human_proximity=2.0,
+            battery=90.0,
+        )
+        dec_nan = cbf_qp.evaluate_safety_qp(pkt_nan)
+        self.assertEqual(dec_nan.decision_status, "INVALID_INPUT")
+        self.assertTrue(dec_nan.intervention_triggered)
+        self.assertEqual(dec_nan.filtered_command, [0.0])
+
+        pkt_inf = self.ingestor.parse_humanoid_joint_state(
+            robot_id="inf_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 1.0),
+            base_vel=(0.0, 0.0, 0.0),
+            current_torques=[10.0],
+            commanded_torques=[float("inf")],
+            human_proximity=2.0,
+            battery=90.0,
+        )
+        dec_inf = cbf_qp.evaluate_safety_qp(pkt_inf)
+        self.assertEqual(dec_inf.decision_status, "INVALID_INPUT")
+        self.assertTrue(dec_inf.intervention_triggered)
+        self.assertEqual(dec_inf.filtered_command, [0.0])
 
     def test_vla_adversarial_guard_and_uncertainty_inflation(self) -> None:
         """Verifies dynamic barrier distance expansion and high-jerk adversarial smoothing."""

@@ -2,7 +2,7 @@
 Merkle Black-Box Audit Ledger & Statutory Compliance Passports.
 Constructs immutable streaming Merkle trees over physical AI telemetry,
 generates cryptographic inclusion proofs for individual flight/actuator decisions,
-and issues legally defensible compliance passports for FAA Part 89 Remote ID,
+and issues synthetic evidence passports for FAA Part 89 Remote ID,
 EU AI Act Annex III, and ISO 10218.
 """
 

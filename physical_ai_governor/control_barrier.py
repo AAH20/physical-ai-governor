@@ -1,15 +1,15 @@
 """
-Control Barrier Function (CBF) Runtime Safety Filter.
-Enforces continuous mathematical forward invariance over physical robot actuators,
-guaranteeing zero human proximity violations, zero torque saturation breaches,
-relative-degree-2 dynamic constraints (HOCBF), and bipedal stability (ZMP / friction cone).
+Control Barrier Function (CBF) Safety Filters & Humanoid Governors.
+Enforces continuous mathematical safety barriers over robot actuator commands,
+monitoring human proximity boundaries, torque limits, and dynamic deceleration constraints.
+Zero external dependencies (pure Python standard library).
 """
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from .qp_solver import ActiveSetQPSolver, QPSolution
+from .qp_solver import ActiveSetQPSolver
 from .telemetry_ingest import RobotTelemetryPacket
 
 
@@ -22,6 +22,7 @@ class SafetyDecision:
     cbf_margin: float
     intervention_triggered: bool
     violation_reason: Optional[str]
+    decision_status: str = "SAFE_NOMINAL"
 
 
 @dataclass
@@ -109,6 +110,7 @@ class ControlBarrierFilter:
             cbf_margin=round(composite_margin, 3),
             intervention_triggered=intervened,
             violation_reason=reason_str,
+            decision_status="SAFE_FILTERED" if intervened else "SAFE_NOMINAL",
         )
 
 
@@ -119,8 +121,8 @@ class QPSafetyFilter:
         minimize    0.5 * ||u - u_nom||^2
         subject to  A_cbf * u <= b_cbf
                     -tau_max <= u_i <= tau_max
-    Guarantees minimal-deviation intervention from AI nominal actions while strictly
-    guaranteeing forward invariance of safety set C.
+    Calculates minimal-deviation intervention from AI nominal actions under forward invariance constraints.
+    Engages a fail-safe protective stop ([0.0] * n) upon infeasibility or solver failure.
     """
 
     def __init__(
@@ -148,7 +150,30 @@ class QPSafetyFilter:
         u_nom = packet.command_torque_input
         n = len(u_nom)
         if n == 0:
-            return SafetyDecision(True, [], [], 1.0, False, None)
+            return SafetyDecision(
+                is_safe=True,
+                original_command=[],
+                filtered_command=[],
+                cbf_margin=1.0,
+                intervention_triggered=False,
+                violation_reason=None,
+                decision_status="SAFE_NOMINAL",
+            )
+
+        # Validate finite inputs (guard against NaN / Inf)
+        def _check_finite(val: float) -> bool:
+            return isinstance(val, (int, float)) and not math.isnan(val) and not math.isinf(val)
+
+        if not all(_check_finite(x) for x in u_nom) or not _check_finite(packet.human_distance_meters) or not all(_check_finite(x) for x in packet.velocity_xyz):
+            return SafetyDecision(
+                is_safe=False,
+                original_command=u_nom,
+                filtered_command=[0.0] * n,
+                cbf_margin=-1.0,
+                intervention_triggered=True,
+                violation_reason="INVALID_INPUT: Non-finite values (NaN/Inf) detected in telemetry packet. Engaged fail-safe protective stop.",
+                decision_status="INVALID_INPUT",
+            )
 
         # Objective: 0.5 * u^T I u - u_nom^T u  <=> min 0.5 * ||u - u_nom||^2
         P = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
@@ -163,8 +188,17 @@ class QPSafetyFilter:
 
         # 1. Proximity Barrier: h_prox = d - d_safe >= 0
         h_prox = packet.human_distance_meters - self.min_human_distance_m
-        # Approximation of relative approach rate if moving directly towards human
         vel_mag = math.sqrt(sum(v * v for v in packet.velocity_xyz))
+
+        # Directional relative Lie derivative L_f h(x) = \nabla h(x) \cdot f(x)
+        # If robot position vector is non-zero, calculate radial approach/retreat rate:
+        pos_norm = math.sqrt(sum(p * p for p in packet.position_xyz))
+        if pos_norm > 1e-3:
+            rad_unit = [p / pos_norm for p in packet.position_xyz]
+            # Radial velocity: positive when moving outward/away, negative when approaching
+            drift_lf = sum(r * v for r, v in zip(rad_unit, packet.velocity_xyz))
+        else:
+            drift_lf = -vel_mag
 
         # Wire control_matrix_g into Lie derivative CBF constraints:
         # L_g h(x) * u >= - L_f h(x) - gamma * h(x)  <=>  - L_g h(x) * u <= L_f h(x) + gamma * h(x)
@@ -172,8 +206,7 @@ class QPSafetyFilter:
             for g_idx, g_row in enumerate(control_matrix_g):
                 if len(g_row) == n:
                     A_cbf.append([-float(val) for val in g_row])
-                    # L_f h(x) drift term + gamma * h(x)
-                    drift_lf = -vel_mag
+                    # L_f h(x) directional drift term + gamma * h(x)
                     b_val = drift_lf + self.cbf_gamma * max(0.0, h_prox)
                     b_cbf.append(b_val)
                     reasons.append(f"QP CBF control_matrix_g[{g_idx}] Constraint Active")
@@ -205,6 +238,24 @@ class QPSafetyFilter:
             u_max=u_max,
         )
 
+        # Inspect solver feasibility and convergence
+        if not sol.converged or not sol.constraints_satisfied or sol.max_constraint_violation > 1e-3:
+            fail_status = "INFEASIBLE" if not sol.constraints_satisfied else "SOLVER_FAILURE"
+            fail_reason = (
+                f"QP CBF {fail_status} (max_violation={sol.max_constraint_violation:.4f}); "
+                "safety constraints cannot be satisfied simultaneously. "
+                "Engaged fail-safe protective stop (zero command)."
+            )
+            return SafetyDecision(
+                is_safe=False,
+                original_command=u_nom,
+                filtered_command=[0.0] * n,
+                cbf_margin=-sol.max_constraint_violation,
+                intervention_triggered=True,
+                violation_reason=fail_reason,
+                decision_status=fail_status,
+            )
+
         filtered = sol.u
         is_intervened = any(abs(f - orig) > 1e-3 for f, orig in zip(filtered, u_nom))
         composite_margin = min(
@@ -219,6 +270,7 @@ class QPSafetyFilter:
             cbf_margin=round(composite_margin, 3),
             intervention_triggered=is_intervened,
             violation_reason="; ".join(reasons) if is_intervened else None,
+            decision_status="SAFE_FILTERED" if is_intervened else "SAFE_NOMINAL",
         )
 
 

@@ -2,7 +2,7 @@
 Humanoid Whole-Body Kinodynamics & Self-Collision Governor.
 Enforces:
     1. Yoshikawa Manipulability Barrier: w(q) = sqrt(det(J J^T)) >= w_min
-       Guarantees arms/legs do not enter kinematic singularities where joint velocities diverge.
+       Enforces that arms/legs do not enter kinematic singularities where joint velocities diverge.
     2. Link-to-Link Self-Collision CBF: ||p_a - p_b||^2 - d_margin^2 >= 0
        Prevents bipedal dual-arm self-collisions and foot-crossing trips.
     3. Joint Torque Rate Limits: ||dtau/dt|| <= dtau_max

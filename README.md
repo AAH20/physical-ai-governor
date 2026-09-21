@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://python.org)
 [![Dependencies: Zero](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-blueviolet.svg)](#-key-highlights)
-[![Tests: 33/33 Passing](https://img.shields.io/badge/Tests-33%2F33%20Passing-success.svg)](#-benchmark-verification)
+[![Tests: 38/38 Passing](https://img.shields.io/badge/Tests-38%2F38%20Passing-success.svg)](#-benchmark-verification)
 [![Black Box: RBB Contract](https://img.shields.io/badge/Black%20Box-RBB%20Contract%20(v0.1.0)-blue.svg)](https://github.com/AAH20/robot-black-box)
 [![Chassis: GRC Claw](https://img.shields.io/badge/Chassis-GRC%20Claw%20(ISO%2042001)-orange.svg)](https://github.com/AAH20/GRC_Claw)
 [![Assurance Hub: A2Z SOC](https://img.shields.io/badge/Assurance-A2Z%20SOC%20Physical%20AI-informational.svg)](https://a2zsoc.com/physical-ai-humanoid-assurance)
@@ -20,8 +20,10 @@
 To maintain strict scientific and regulatory honesty:
 - **Zero External Dependencies**: Pure Python 3.10+ standard library (`math`, `hashlib`, `hmac`, `struct`, `urllib`). No external C++ libraries, ROS 2 runtime daemons, or heavy numerical solvers required.
 - **Research Testbed, Not Production Avionics/Flight Controller**: Designed for software-in-the-loop (SIL) evaluation, governance verification, and telemetry testing. Production deployment onto safety-critical actuators requires real-time RTOS guarantees, certified hardware watchdogs, and formal validation.
+- **Fail-Closed Authenticated RBB Verification**: Bundles are verified under fail-closed external authentication (`trust_mode='AUTHENTICATED'`). An RBB bundle cannot prove provenance without out-of-band trusted producer and witness keys. Self-witnessed receipts are rejected (`INDEPENDENT_WITNESS_REQUIRED`). Internal structural coherence without authentication is explicitly isolated to `trust_mode='INTEGRITY_ONLY'`.
+- **QP-CBF Infeasibility & Fail-Safe Protective Stop**: The quadratic programming solver (`ActiveSetQPSolver`) checks all constraint residuals ($A_{\text{all}} u \le b_{\text{all}} + \text{tol}$). If constraints are contradictory, infeasible, or inputs are non-finite (NaN/Inf), the filter commands a fail-safe protective stop (`[0.0] * n`) with explicit status `INFEASIBLE`, `SOLVER_FAILURE`, or `INVALID_INPUT`.
 - **Blinded Commitment Audit Envelopes (Not ZK-SNARKs)**: The prover module (`BlindedSafetyProver`) implements a cryptographic commitment and challenge scheme (SHA-256 hash blinding with Fiat-Shamir heuristics) for privacy-preserving audit disclosure. It is not an arithmetic circuit proving system (ZK-SNARK/STARK).
-- **Simulated TPM Attestation (Software Reference Mock)**: The attestation module (`SimulatedTPMAttestor`) models TPM 2.0 PCR extensions and HMAC quotes in software. It does not interface with physical TPM hardware (`/dev/tpmrm0`) or TSS2 stacks.
+- **Simulated TPM Attestation (Software Reference Mock)**: The attestation module (`SimulatedTPMAttestor`) models TPM 2.0 PCR extensions and HMAC quotes in software, deliberately emitting a `UserWarning` to ensure developers never treat it as a physical hardware root of trust. It does not interface with physical TPM hardware (`/dev/tpmrm0`) or TSS2 stacks.
 - **Synthetic Evidence Generation (Not Statutory Certification)**: Passports and dossiers emit evidence statuses (e.g. `CONTROL_EVIDENCE_GENERATED`, `SYNTHETIC_TEST_PASSED`, `FAA_MOC_DOC_REQUIRED`). Official regulatory certification requires independent accredited notified body assessment and approved Means of Compliance (MOC).
 
 ---
@@ -150,20 +152,26 @@ print(f"Gateway Sync: {sync_result['status']}")
 
 `physical-ai-governor` implements the [**Robot Black Box (RBB)**](https://github.com/AAH20/robot-black-box) contract (`v0.1.0`), recording and validating physical flight logs according to specification `1.0.0-local.1`:
 
-1. **RFC 8785 Canonical JSON Serialization**: Guarantees bitwise-identical digests across all compliant runtimes.
+1. **RFC 8785 Canonical JSON Serialization**: Produces bitwise-identical digests across all compliant runtimes.
 2. **Sequential Event Hash Chaining**: Every event links to the prior via `previous_digest`, with domain separation prefix (`RBB-EVENT-v1\0`).
 3. **Rigorous Recomputed Body Digest Verification**:
    The offline verifier (`RobotBlackBoxVerifier`) recalculates the event body digest:
    $$\text{recomputed} = \text{SHA256}(\text{canonical\_json}(\{k: v \mid k \ne \text{'authentication'}\}))$$
    and verifies that `recomputed == auth['event_digest']`. This catches all payload tampering, unauthorized scope alterations, and spoofing attempts even if `events.ndjson` and `manifest.json` are maliciously recalculated.
-4. **Trust Profile & Signature Auditing**: Inspects `trust.json` to verify that signing keys are valid and unrevoked, and verifies HMAC-SHA256 signatures when secrets are provided.
+4. **Fail-Closed External Authentication & Independent Witness Verification**:
+   Requires out-of-band external trusted keys (`trust_mode='AUTHENTICATED'`) to prove provenance and authenticate signatures across events, manifest, checkpoints, and witness receipts. Rejects self-witnessed receipts (`witness_key_id == producer_key_id`). Explicit `trust_mode='INTEGRITY_ONLY'` is available for offline internal structure inspection without claiming authentication.
 5. **Periodic Checkpoints & Witness Consensus**: Validates `checkpoints.json` and `witness/latest-heads.json` ensuring tamper-evident head consistency.
 
 ```python
 from physical_ai_governor import RobotBlackBoxRecorder, RobotBlackBoxVerifier
 
-# 1. Initialize flight recorder and start run
-recorder = RobotBlackBoxRecorder(robot_id="humanoid_gr00t_01", tenant_ref="factory_floor_1")
+# 1. Initialize flight recorder with independent witness identity
+recorder = RobotBlackBoxRecorder(
+    robot_id="humanoid_gr00t_01",
+    tenant_ref="factory_floor_1",
+    signing_key_id="prod-key-01",
+    witness_key_id="witness-local-01",
+)
 recorder.start_run(task="benign_block_handover")
 
 # 2. Stream telemetry and CBF decisions
@@ -174,9 +182,17 @@ recorder.close_run()
 bundle_info = recorder.export_bundle(output_dir="./rbb_evidence_bundle")
 print(f"RBB Bundle Exported: {bundle_info['bundle_path']}, Total Events: {bundle_info['total_events']}")
 
-# 4. Perform independent forensic audit
-report = RobotBlackBoxVerifier.verify_bundle("./rbb_evidence_bundle")
-print(f"Bundle Valid: {report.is_valid}, Checks Passed: {len(report.checks_passed)}")
+# 4. Perform authenticated forensic audit with external trusted keys (Fail-Closed)
+report = RobotBlackBoxVerifier.verify_bundle(
+    "./rbb_evidence_bundle",
+    trust_mode="AUTHENTICATED",
+    external_trusted_keys=recorder.get_trusted_keys(),
+)
+print(f"Bundle Valid: {report.is_valid}, Authenticated: {report.is_authenticated}")
+
+# 5. Optional integrity-only audit (internal coherence only, unauthenticated)
+integ_report = RobotBlackBoxVerifier.verify_bundle("./rbb_evidence_bundle", trust_mode="INTEGRITY_ONLY")
+print(f"Internal Coherence Valid: {integ_report.is_valid}, Authenticated: {integ_report.is_authenticated}")
 ```
 
 ---
@@ -188,7 +204,7 @@ Let the physical robot state be $\mathbf{x} \in \mathbb{R}^n$ and actuator comma
 
 $$\mathcal{C} = \{ \mathbf{x} \in \mathbb{R}^n \mid h(\mathbf{x}) \ge 0 \}$$
 
-To guarantee that the robot remains safely within $\mathcal{C}$ for all time $t \ge 0$ (forward invariance), the control input $\mathbf{u}$ must satisfy the Nagumo barrier condition:
+To enforce that the robot remains safely within $\mathcal{C}$ for all time $t \ge 0$ (forward invariance), the control input $\mathbf{u}$ must satisfy the Nagumo barrier condition:
 
 $$\dot{h}(\mathbf{x}, \mathbf{u}) = \nabla h(\mathbf{x}) \cdot \dot{\mathbf{x}} \ge -\alpha(h(\mathbf{x}))$$
 
@@ -203,7 +219,7 @@ $$L_{\mathbf{g}} h(\mathbf{x})\mathbf{u} \ge -L_{\mathbf{f}} h(\mathbf{x}) - \ga
 
 $$\min_{\mathbf{u} \in \mathcal{U}} \frac{1}{2} \|\mathbf{u} - \mathbf{u}_{\text{nom}}\|^2 \quad \text{subject to} \quad \mathbf{A}_{\text{cbf}} \mathbf{u} \le \mathbf{b}_{\text{cbf}}, \quad -\boldsymbol{\tau}_{\max} \le \mathbf{u} \le \boldsymbol{\tau}_{\max}$$
 
-where $\mathbf{A}_{\text{cbf}} = -L_{\mathbf{g}} h(\mathbf{x})$ and $\mathbf{b}_{\text{cbf}} = L_{\mathbf{f}} h(\mathbf{x}) + \gamma h(\mathbf{x})$. Solved deterministically via the built-in `ActiveSetQPSolver`.
+where $\mathbf{A}_{\text{cbf}} = -L_{\mathbf{g}} h(\mathbf{x})$ and $\mathbf{b}_{\text{cbf}} = L_{\mathbf{f}} h(\mathbf{x}) + \gamma h(\mathbf{x})$. Solved deterministically via the built-in `ActiveSetQPSolver`. Infeasible constraints engage a protective stop ($[0.0] * n$).
 
 ### 3. High-Order CBFs (HOCBF) for Relative Degree $r=2$
 For dynamic systems where actuator commands control acceleration or torque:
@@ -213,7 +229,7 @@ Bounding allowable approach velocity and ensuring smooth deceleration damping.
 ### 4. Bipedal Humanoid Stability (ZMP & Friction Cone)
 - **Zero Moment Point (ZMP)**: Evaluated using the cart-table inverted pendulum model:
   $$x_{\text{zmp}} = x_{\text{com}} - \frac{z_{\text{com}}}{g} \ddot{x}_{\text{com}}, \quad y_{\text{zmp}} = y_{\text{com}} - \frac{z_{\text{com}}}{g} \ddot{y}_{\text{com}}$$
-  Guarantees $(x_{\text{zmp}}, y_{\text{zmp}})$ remains strictly inside the support polygon $[x_{\min}, x_{\max}] \times [y_{\min}, y_{\max}]$.
+  Constrains $(x_{\text{zmp}}, y_{\text{zmp}})$ to remain strictly inside the support polygon $[x_{\min}, x_{\max}] \times [y_{\min}, y_{\max}]$.
 - **Coulomb Friction Cone**: Ground reaction force $\mathbf{F} = (F_x, F_y, F_z)$ must satisfy:
   $$\sqrt{F_x^2 + F_y^2} \le \mu F_z$$
 
@@ -232,7 +248,7 @@ $$\mathbf{c}_i = \text{SHA256}(\text{Leaf}_i \parallel \text{safe}_i \parallel r
 Where $r_i$ is an ephemeral 128-bit blinding factor, $R$ is the public Merkle root, and $e$ is the Fiat-Shamir challenge.
 
 ### 7. Reciprocal Multi-Agent Swarm Barrier Functions
-For multi-robot swarms (drones, AGVs, quadrupeds), pairwise reciprocal safety barriers guarantee collision-free coordination:
+For multi-robot swarms (drones, AGVs, quadrupeds), pairwise reciprocal safety barriers enforce collision-free coordination:
 
 $$h_{ij}(\mathbf{p}_i, \mathbf{p}_j) = \|\mathbf{p}_i - \mathbf{p}_j\|^2 - d_{\min}^2 \ge 0, \quad \dot{h}_{ij} = 2(\mathbf{p}_i - \mathbf{p}_j) \cdot (\mathbf{v}_i - \mathbf{v}_j) \ge -\gamma h_{ij}$$
 
@@ -249,7 +265,9 @@ $$\tilde{d}_{\min}(\sigma) = \frac{d_{\min}}{1 - \min(\sigma, 0.60)}$$
 | :--- | :--- | :--- |
 | **GRC_Claw (ISO 42001)** | Clauses 6.1, 8.2, 9.1 (AI Management System) | Native RFC 8785 canonical evidence records, `rbb://` URI schema, and automated AIMS readiness envelopes. |
 | **FAA Part 89** | 14 CFR § 89.305 / § 89.310 (Remote ID Broadcast) | Generates ASTM F3411-22a compliant OpenDroneID broadcast frames (Type 0x1 Location/Vector & Type 0x5 Operator ID). Evidence status `FAA_MOC_DOC_REQUIRED`. |
-| **EU AI Act** | Art. 6(1) Machinery Reg. & Annex III (High-Risk AI) | Automated technical dossiers, incident timeline forensic analysis, and continuous CBF guarantees. Evidence status `CONTROL_EVIDENCE_GENERATED`. |
+| **EU AI Act** | Art. 6(1) Machinery Reg. & Annex III (High-Risk AI) | Automated technical dossiers, incident timeline forensic analysis, and continuous CBF interventions. Evidence status `CONTROL_EVIDENCE_GENERATED`. |
+| **ISO 10218-1 / 2** | Section 5.10 (Collaborative Robot Safety) | Human proximity protective damping, dynamic speed & separation monitoring (SSM), and joint torque limits (PFL). Evidence status `SYNTHETIC_TEST_PASSED`. |
+| **ISO/TS 15066** | Collaborative Robots — Biomechanical Limits | Real-time contact force evaluation against statutory pressure and force thresholds across human body regions. |
 | **ISO 10218-1 / 2** | Section 5.10 (Collaborative Robot Safety) | Human proximity protective damping, dynamic speed & separation monitoring (SSM), and joint torque limits (PFL). Evidence status `SYNTHETIC_TEST_PASSED`. |
 | **ISO/TS 15066** | Collaborative Robots — Biomechanical Limits | Real-time contact force evaluation against statutory pressure and force thresholds across human body regions. |
 
@@ -476,6 +494,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 ```
+test_blinded_safety_prover_and_verifier (test_physical_ai.TestPhysicalAIGovernor.test_blinded_safety_prover_and_verifier) ... ok
 test_cli_commands (test_physical_ai.TestPhysicalAIGovernor.test_cli_commands) ... ok
 test_compliance_passport_issuance (test_physical_ai.TestPhysicalAIGovernor.test_compliance_passport_issuance) ... ok
 test_control_barrier_human_proximity_damping (test_physical_ai.TestPhysicalAIGovernor.test_control_barrier_human_proximity_damping) ... ok
@@ -492,26 +511,30 @@ test_mavlink_binary_frame_and_crc (test_physical_ai.TestPhysicalAIGovernor.test_
 test_merkle_audit_proof_generation_and_verification (test_physical_ai.TestPhysicalAIGovernor.test_merkle_audit_proof_generation_and_verification) ... ok
 test_merkle_blackbox_hash_chaining (test_physical_ai.TestPhysicalAIGovernor.test_merkle_blackbox_hash_chaining) ... ok
 test_qp_safety_filter (test_physical_ai.TestPhysicalAIGovernor.test_qp_safety_filter) ... ok
+test_qp_safety_filter_failsafe_on_infeasible_constraints (test_physical_ai.TestPhysicalAIGovernor.test_qp_safety_filter_failsafe_on_infeasible_constraints) ... ok
+test_qp_safety_filter_handles_invalid_nan_inputs (test_physical_ai.TestPhysicalAIGovernor.test_qp_safety_filter_handles_invalid_nan_inputs) ... ok
 test_qp_safety_filter_with_control_matrix (test_physical_ai.TestPhysicalAIGovernor.test_qp_safety_filter_with_control_matrix) ... ok
+test_qp_solver_detects_contradictory_infeasibility (test_physical_ai.TestPhysicalAIGovernor.test_qp_solver_detects_contradictory_infeasibility) ... ok
 test_qp_solver_unconstrained_and_constrained (test_physical_ai.TestPhysicalAIGovernor.test_qp_solver_unconstrained_and_constrained) ... ok
 test_rbb_canonical_serialization_and_validation (test_physical_ai.TestPhysicalAIGovernor.test_rbb_canonical_serialization_and_validation) ... ok
 test_rbb_cli_commands (test_physical_ai.TestPhysicalAIGovernor.test_rbb_cli_commands) ... ok
 test_rbb_recorder_and_verifier_bundle_integrity (test_physical_ai.TestPhysicalAIGovernor.test_rbb_recorder_and_verifier_bundle_integrity) ... ok
 test_rbb_verifier_detects_scope_tampering (test_physical_ai.TestPhysicalAIGovernor.test_rbb_verifier_detects_scope_tampering) ... ok
+test_rbb_verifier_rejects_fully_rewritten_bundle_without_external_trust (test_physical_ai.TestPhysicalAIGovernor.test_rbb_verifier_rejects_fully_rewritten_bundle_without_external_trust) ... ok
+test_rbb_verifier_rejects_self_signed_witness (test_physical_ai.TestPhysicalAIGovernor.test_rbb_verifier_rejects_self_signed_witness) ... ok
 test_ros2_telemetry_bridge_conversions (test_physical_ai.TestPhysicalAIGovernor.test_ros2_telemetry_bridge_conversions) ... ok
 test_ros2_telemetry_bridge_multi_cycle (test_physical_ai.TestPhysicalAIGovernor.test_ros2_telemetry_bridge_multi_cycle) ... ok
+test_simulated_tpm_attestation (test_physical_ai.TestPhysicalAIGovernor.test_simulated_tpm_attestation) ... ok
 test_statutory_engine_faa_eu_iso (test_physical_ai.TestPhysicalAIGovernor.test_statutory_engine_faa_eu_iso) ... ok
 test_swarm_control_barrier_governor (test_physical_ai.TestPhysicalAIGovernor.test_swarm_control_barrier_governor) ... ok
 test_telemetry_ingestion_parsers (test_physical_ai.TestPhysicalAIGovernor.test_telemetry_ingestion_parsers) ... ok
 test_telemetry_stream_server_processing (test_physical_ai.TestPhysicalAIGovernor.test_telemetry_stream_server_processing) ... ok
-test_tpm2_hardware_silicon_attestation (test_physical_ai.TestPhysicalAIGovernor.test_tpm2_hardware_silicon_attestation) ... ok
 test_vla_action_horizon_validator (test_physical_ai.TestPhysicalAIGovernor.test_vla_action_horizon_validator) ... ok
 test_vla_adversarial_guard_and_uncertainty_inflation (test_physical_ai.TestPhysicalAIGovernor.test_vla_adversarial_guard_and_uncertainty_inflation) ... ok
 test_whole_body_kinodynamics_and_singularity_avoidance (test_physical_ai.TestPhysicalAIGovernor.test_whole_body_kinodynamics_and_singularity_avoidance) ... ok
-test_zk_safety_prover_and_verifier (test_physical_ai.TestPhysicalAIGovernor.test_zk_safety_prover_and_verifier) ... ok
 
 ----------------------------------------------------------------------
-Ran 33 tests in 0.065s
+Ran 38 tests in 0.085s
 
 OK
 ```

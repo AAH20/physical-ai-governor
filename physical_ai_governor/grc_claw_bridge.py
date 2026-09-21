@@ -93,7 +93,7 @@ class GRCClawBridge:
         custom_lineage: Optional[Dict[str, Any]] = None,
     ) -> GRCClawEvidenceRecord:
         """
-        Packs a CompliancePassport into a certified GRC_Claw EvidenceStore record.
+        Packs a CompliancePassport into a canonical GRC_Claw EvidenceStore record.
         """
         now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         uri = f"rbb://{passport.robot_id}/passport/{int(passport.timestamp)}"
@@ -253,7 +253,7 @@ class GRCClawBridge:
                     "response": json.loads(resp_data),
                 }
         except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-            # Graceful offline mode: return local certified receipt
+            # Graceful offline mode: return local evidence receipt
             return {
                 "status": "OFFLINE_QUEUED",
                 "message": f"GRC_Claw Gateway offline ({e}). Evidence securely notarized locally.",

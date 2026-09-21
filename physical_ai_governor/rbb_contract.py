@@ -80,7 +80,7 @@ PAYLOAD_FIELDS: Dict[str, List[str]] = {
 def canonical_json(value: Any) -> str:
     """
     Serializes a Python object to deterministic RFC 8785 Canonical JSON.
-    Guarantees:
+    Properties:
         1. Object keys sorted lexicographically (Unicode code point order).
         2. No whitespace around colons or commas (separators=(',', ':')).
         3. String characters properly escaped without unnecessary sequences.

@@ -85,7 +85,7 @@ class RemoteIDLocationPayload:
 class StatutoryAssuranceEngine:
     """
     Statutory Engine translating telemetry and black-box Merkle trees
-    into legally binding compliance passports and broadcast packets.
+    into structured regulatory evidence records and broadcast packets.
     """
 
     def synthesize_faa_part89_remote_id(
@@ -146,7 +146,7 @@ class StatutoryAssuranceEngine:
             },
             "risk_mitigation_controls": {
                 "safety_control_type": "Continuous Control Barrier Functions (CBF)",
-                "mathematical_guarantee": "Forward Set Invariance (Nagumo Theorem)",
+                "mathematical_property": "Forward Set Invariance (Nagumo Theorem)",
                 "joint_torque_limit_nm": 150.0,
                 "minimum_human_separation_m": 1.50,
                 "interventions_enforced": passport.safety_interventions_count,
