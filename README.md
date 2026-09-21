@@ -84,10 +84,10 @@ Bounding the allowable approach rate and ensuring smooth deceleration before phy
 ### 5. Streaming Merkle Black-Box & Inclusion Proofs
 Every ingested packet and filter decision is serialized and hashed into an incremental binary Merkle tree:
 
-$$\text{Leaf}_i = \text{SHA256}(\text{robot\_id} \parallel t_i \parallel \mathbf{p}_i \parallel \mathbf{v}_i \parallel d_{\text{human}, i} \parallel \text{is\_safe}_i \parallel \mathbf{u}_{\text{filtered}, i})$$
+$$\text{Leaf}_i = \text{SHA256}(\mathrm{ID}_{\text{robot}, i} \parallel t_i \parallel \mathbf{p}_i \parallel \mathbf{v}_i \parallel d_{\text{human}, i} \parallel \text{safe}_i \parallel \mathbf{u}_{\text{filtered}, i})$$
 
 Any individual event $k$ can be proven to regulators via an $O(\log N)$ Merkle audit path:
-$$\pi_k = \{ (s_1, \text{pos}_1), \dots, (s_m, \text{pos}_m) \} \quad \text{such that} \quad \text{Verify}(\text{Leaf}_k, \pi_k, R) = \text{True}$$
+$$\pi_k = \{ (s_1, p_1), \dots, (s_m, p_m) \} \quad \text{such that} \quad \text{Verify}(\text{Leaf}_k, \pi_k, R) = \text{True}$$
 
 ---
 
