@@ -1326,11 +1326,17 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         self.assertEqual(package.total_cycles, 1)
         self.assertEqual(len(package.openings), 1)
 
-        # Full opening package verification
-        status = BlindedSafetyProver.verify_opening_package(envelope, package)
-        self.assertTrue(status.is_valid)
-        self.assertEqual(status.status, "PREDICATES_VERIFIED")
-        self.assertEqual(status.cycles_verified, 1)
+        # Self-asserted opening package verification (without external root anchor)
+        status_self = BlindedSafetyProver.verify_opening_package(envelope, package)
+        self.assertTrue(status_self.is_valid)
+        self.assertEqual(status_self.status, "SELF_ASSERTED_PREDICATES_VERIFIED")
+        self.assertEqual(status_self.cycles_verified, 1)
+
+        # Externally anchored opening package verification (with verified external root anchor)
+        status_anchored = BlindedSafetyProver.verify_opening_package(envelope, package, expected_merkle_root=envelope.merkle_root)
+        self.assertTrue(status_anchored.is_valid)
+        self.assertEqual(status_anchored.status, "PREDICATES_VERIFIED")
+        self.assertEqual(status_anchored.cycles_verified, 1)
 
     def test_blinded_commitment_rejects_unsafe_opening(self) -> None:
         """
@@ -1345,7 +1351,7 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         merkle_root = "aa" * 32
         invariants = ["min_human_distance >= 1.5m", "forward_invariance_cbf_simulated == True"]
         r_blind = "11" * 16
-        leaf_hash = "bb" * 32
+        leaf_hash = merkle_root
 
         # Attacker crafts hash matching unsafe distance 0.1m
         unsafe_prox = 0.1
@@ -1371,7 +1377,7 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             timestamp=100.0,
         )
 
-        # verify_opening must reject the unsafe distance despite valid hash commitment
+        # verify_opening must reject the unsafe distance despite valid hash commitment and valid Merkle root
         res = BlindedSafetyProver.verify_opening(
             envelope=envelope,
             cycle_index=0,
@@ -1379,6 +1385,7 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             is_safe=is_safe,
             human_proximity=unsafe_prox,
             blinding_factor=r_blind,
+            merkle_proof=[],
         )
         self.assertFalse(res)
 
@@ -1491,6 +1498,325 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             self.assertFalse(report.is_valid)
             self.assertFalse(report.is_authenticated)
             self.assertTrue(any("ALGORITHM_MISMATCH" in e for e in report.errors))
+
+    def test_blinded_commitment_rejects_substituted_safe_payload(self) -> None:
+        """
+        Adversarial audit gap 1 check:
+        Verifies that presenting a genuine leaf hash with a substituted fake safe payload
+        is rejected by canonical record re-hashing and leaf binding.
+        """
+        from physical_ai_governor.zk_proof import BlindedSafetyProver
+
+        # Original telemetry cycle has high velocity (violating max_velocity <= 4.0m/s)
+        pkt = self.ingestor.parse_humanoid_joint_state(
+            robot_id="fast_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 1.0),
+            base_vel=(100.0, 0.0, 0.0),
+            current_torques=[10.0],
+            commanded_torques=[10.0],
+            human_proximity=3.0,
+            battery=90.0,
+        )
+        dec = self.filter.evaluate_safety(pkt)
+        self.blackbox.append_record(pkt, dec)
+
+        prover = BlindedSafetyProver()
+        envelope, package = prover.generate_envelope_with_openings(self.blackbox, robot_id="fast_bot")
+        op0 = package.openings[0]
+
+        # Genuine record payload has velocity [100.0, 0.0, 0.0]
+        # Attacker crafts substituted record payload with velocity [0.0, 0.0, 0.0]
+        substituted_record = dict(op0.record_payload)
+        substituted_record["velocity"] = [0.0, 0.0, 0.0]
+
+        # verify_opening must detect that substituted_record does not recompute to op0.leaf_hash
+        res = BlindedSafetyProver.verify_opening(
+            envelope=envelope,
+            cycle_index=0,
+            leaf_hash=op0.leaf_hash,
+            is_safe=op0.is_safe,
+            human_proximity=op0.human_proximity,
+            blinding_factor=op0.blinding_factor,
+            merkle_proof=op0.merkle_proof,
+            full_record=substituted_record,
+        )
+        self.assertFalse(res)
+
+    def test_blinded_commitment_rejects_missing_merkle_proof(self) -> None:
+        """
+        Adversarial audit gap 2 check:
+        Verifies that verify_opening strictly requires a Merkle inclusion proof.
+        Passing merkle_proof=None must fail closed.
+        """
+        from physical_ai_governor.zk_proof import BlindedSafetyProver
+
+        pkt = self.ingestor.parse_humanoid_joint_state("bot_mp_test", 1000, (0, 0, 1), (0, 0, 0), [10], [10], 2.5, 90)
+        dec = self.filter.evaluate_safety(pkt)
+        self.blackbox.append_record(pkt, dec)
+
+        prover = BlindedSafetyProver()
+        envelope, package = prover.generate_envelope_with_openings(self.blackbox, robot_id="bot_mp_test")
+        op0 = package.openings[0]
+
+        # Passing merkle_proof=None
+        res = BlindedSafetyProver.verify_opening(
+            envelope=envelope,
+            cycle_index=0,
+            leaf_hash=op0.leaf_hash,
+            is_safe=op0.is_safe,
+            human_proximity=op0.human_proximity,
+            blinding_factor=op0.blinding_factor,
+            merkle_proof=None,
+            full_record=op0.record_payload,
+        )
+        self.assertFalse(res)
+
+    def test_blinded_commitment_provenance_status_distinguishes_self_assertion(self) -> None:
+        """
+        Adversarial audit gap 3 check:
+        Verifies that verifying an opening package without expected_merkle_root yields
+        SELF_ASSERTED_PREDICATES_VERIFIED, while verifying with a matching expected_merkle_root
+        yields PREDICATES_VERIFIED.
+        """
+        from physical_ai_governor.zk_proof import BlindedSafetyProver
+
+        pkt = self.ingestor.parse_humanoid_joint_state("bot_prov", 1000, (0, 0, 1), (0, 0, 0), [10], [10], 2.5, 90)
+        dec = self.filter.evaluate_safety(pkt)
+        self.blackbox.append_record(pkt, dec)
+
+        prover = BlindedSafetyProver()
+        envelope, package = prover.generate_envelope_with_openings(self.blackbox, robot_id="bot_prov")
+
+        # 1. Self-asserted provenance (no expected root provided)
+        status_unanchored = BlindedSafetyProver.verify_opening_package(envelope, package)
+        self.assertTrue(status_unanchored.is_valid)
+        self.assertEqual(status_unanchored.status, "SELF_ASSERTED_PREDICATES_VERIFIED")
+
+        # 2. Externally anchored provenance (matching expected root)
+        status_anchored = BlindedSafetyProver.verify_opening_package(envelope, package, expected_merkle_root=envelope.merkle_root)
+        self.assertTrue(status_anchored.is_valid)
+        self.assertEqual(status_anchored.status, "PREDICATES_VERIFIED")
+
+        # 3. Root mismatch fails closed
+        status_mismatch = BlindedSafetyProver.verify_opening_package(envelope, package, expected_merkle_root="00" * 32)
+        self.assertFalse(status_mismatch.is_valid)
+        self.assertEqual(status_mismatch.status, "INVALID_STRUCTURE")
+
+    def test_control_barrier_and_qp_reject_malformed_vector_dimensions(self) -> None:
+        """
+        Adversarial audit gap 4 check:
+        Verifies that passing 1D, 2D, or 4D vectors for position/velocity in telemetry packets
+        fails closed with decision_status='INVALID_INPUT' and a protective stop in both CBF and QP.
+        """
+        qp = QPSafetyFilter(min_human_distance_m=1.50)
+
+        # 1. 2D position_xyz
+        pkt_2d_pos = self.ingestor.parse_humanoid_joint_state(
+            robot_id="dim_bot",
+            timestamp_ns=1000,
+            base_pos=(1.0, 2.0),  # 2D instead of 3D!
+            base_vel=(0.0, 0.0, 0.0),
+            current_torques=[10.0, 10.0],
+            commanded_torques=[10.0, 10.0],
+            human_proximity=2.5,
+            battery=90.0,
+        )
+        res_cbf = self.filter.evaluate_safety(pkt_2d_pos)
+        self.assertFalse(res_cbf.is_safe)
+        self.assertEqual(res_cbf.decision_status, "INVALID_INPUT")
+        self.assertEqual(res_cbf.filtered_command, [0.0, 0.0])
+
+        res_qp = qp.evaluate_safety_qp(pkt_2d_pos)
+        self.assertFalse(res_qp.is_safe)
+        self.assertEqual(res_qp.decision_status, "INVALID_INPUT")
+        self.assertEqual(res_qp.filtered_command, [0.0, 0.0])
+
+        # 2. 1D velocity_xyz
+        pkt_1d_vel = self.ingestor.parse_humanoid_joint_state(
+            robot_id="dim_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 1.0),
+            base_vel=(0.5,),  # 1D instead of 3D!
+            current_torques=[10.0, 10.0],
+            commanded_torques=[10.0, 10.0],
+            human_proximity=2.5,
+            battery=90.0,
+        )
+        res_cbf2 = self.filter.evaluate_safety(pkt_1d_vel)
+        self.assertFalse(res_cbf2.is_safe)
+        self.assertEqual(res_cbf2.decision_status, "INVALID_INPUT")
+
+        res_qp2 = qp.evaluate_safety_qp(pkt_1d_vel)
+        self.assertFalse(res_qp2.is_safe)
+        self.assertEqual(res_qp2.decision_status, "INVALID_INPUT")
+
+        # 3. 4D human_relative_position_xyz
+        pkt_4d = self.ingestor.parse_humanoid_joint_state(
+            robot_id="dim_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 1.0),
+            base_vel=(0.0, 0.0, 0.0),
+            current_torques=[10.0],
+            commanded_torques=[10.0],
+            human_proximity=2.5,
+            battery=90.0,
+        )
+        pkt_4d.human_relative_position_xyz = (1.0, 2.0, 3.0, 4.0)  # 4D!
+        res_cbf3 = self.filter.evaluate_safety(pkt_4d)
+        self.assertFalse(res_cbf3.is_safe)
+        self.assertEqual(res_cbf3.decision_status, "INVALID_INPUT")
+
+        res_qp3 = qp.evaluate_safety_qp(pkt_4d)
+        self.assertFalse(res_qp3.is_safe)
+        self.assertEqual(res_qp3.decision_status, "INVALID_INPUT")
+
+    def test_blinded_opening_package_rejects_identity_and_count_mismatches(self) -> None:
+        """
+        Adversarial audit gap 5 check:
+        Verifies that verify_opening_package rejects packages where proof_id, robot_id,
+        or total_cycles do not match the envelope.
+        """
+        from physical_ai_governor.zk_proof import BlindedSafetyProver, BlindedOpeningPackage
+
+        pkt = self.ingestor.parse_humanoid_joint_state("id_bot", 1000, (0, 0, 1), (0, 0, 0), [10], [10], 2.5, 90)
+        dec = self.filter.evaluate_safety(pkt)
+        self.blackbox.append_record(pkt, dec)
+
+        prover = BlindedSafetyProver()
+        envelope, package = prover.generate_envelope_with_openings(self.blackbox, robot_id="id_bot")
+
+        # Mismatched proof_id
+        pkg_bad_proof = BlindedOpeningPackage(
+            proof_id="wrong_proof_id",
+            robot_id=package.robot_id,
+            merkle_root=package.merkle_root,
+            total_cycles=package.total_cycles,
+            openings=package.openings,
+        )
+        status = BlindedSafetyProver.verify_opening_package(envelope, pkg_bad_proof)
+        self.assertFalse(status.is_valid)
+        self.assertEqual(status.status, "INVALID_STRUCTURE")
+
+        # Mismatched robot_id
+        pkg_bad_robot = BlindedOpeningPackage(
+            proof_id=package.proof_id,
+            robot_id="impostor_bot",
+            merkle_root=package.merkle_root,
+            total_cycles=package.total_cycles,
+            openings=package.openings,
+        )
+        status2 = BlindedSafetyProver.verify_opening_package(envelope, pkg_bad_robot)
+        self.assertFalse(status2.is_valid)
+        self.assertEqual(status2.status, "INVALID_STRUCTURE")
+
+        # Mismatched total_cycles
+        pkg_bad_count = BlindedOpeningPackage(
+            proof_id=package.proof_id,
+            robot_id=package.robot_id,
+            merkle_root=package.merkle_root,
+            total_cycles=999,
+            openings=package.openings,
+        )
+        status3 = BlindedSafetyProver.verify_opening_package(envelope, pkg_bad_count)
+        self.assertFalse(status3.is_valid)
+        self.assertEqual(status3.status, "INVALID_STRUCTURE")
+
+    def test_blinded_opening_package_dynamic_per_predicate_tracking(self) -> None:
+        """
+        Adversarial audit gap 6 check:
+        Verifies that verify_opening_package dynamically tracks individual predicate satisfaction,
+        setting predicate_results[inv] = False for any invariant breached during opened cycles.
+        """
+        from physical_ai_governor.zk_proof import BlindedSafetyProver
+
+        # 1 safe cycle and 1 unsafe cycle
+        pkt_safe = self.ingestor.parse_humanoid_joint_state("dyn_bot", 1000, (0, 0, 1), (0, 0, 0), [10], [10], 2.5, 90)
+        dec_safe = self.filter.evaluate_safety(pkt_safe)
+        self.blackbox.append_record(pkt_safe, dec_safe)
+
+        # Force record an unsafe cycle (e.g. human distance breached)
+        pkt_unsafe = self.ingestor.parse_humanoid_joint_state("dyn_bot", 2000, (0, 0, 1), (0, 0, 0), [10], [10], 0.5, 90)
+        dec_unsafe = self.filter.evaluate_safety(pkt_unsafe)
+        self.blackbox.append_record(pkt_unsafe, dec_unsafe)
+
+        prover = BlindedSafetyProver()
+        envelope, package = prover.generate_envelope_with_openings(self.blackbox, robot_id="dyn_bot")
+
+        status = BlindedSafetyProver.verify_opening_package(envelope, package)
+        self.assertFalse(status.is_valid)
+        self.assertEqual(status.status, "PREDICATE_FAILED")
+        # Invariant min_human_distance >= 1.5m MUST be marked False
+        dist_invariants = [inv for inv in status.predicate_results if inv.startswith("min_human_distance")]
+        self.assertTrue(len(dist_invariants) > 0)
+        for inv in dist_invariants:
+            self.assertFalse(status.predicate_results[inv])
+
+    def test_named_safety_predicates_distinct_measurable_evaluators(self) -> None:
+        """
+        Adversarial audit gap 7 check:
+        Verifies distinct physical evaluations for:
+        - CBF_FORWARD_INVARIANCE_HOLDS (requires is_safe and cbf_margin >= 0)
+        - ISO_10218_TORQUE_LIMIT_SATISFIED (requires actuator torques <= 150.0 Nm)
+        - COLLABORATIVE_SEPARATION_MAINTAINED (requires human proximity >= 1.50 m)
+        """
+        from physical_ai_governor.zk_proof import parse_invariant_claim
+
+        pred_cbf = parse_invariant_claim("CBF_FORWARD_INVARIANCE_HOLDS")
+        pred_torque = parse_invariant_claim("ISO_10218_TORQUE_LIMIT_SATISFIED")
+        pred_collab = parse_invariant_claim("COLLABORATIVE_SEPARATION_MAINTAINED")
+
+        self.assertIsNotNone(pred_cbf)
+        self.assertIsNotNone(pred_torque)
+        self.assertIsNotNone(pred_collab)
+
+        # Record with is_safe=True but cbf_margin < 0
+        rec_bad_margin = {
+            "is_safe": True,
+            "cbf_margin": -0.5,
+            "filtered_command": [10.0],
+            "human_proximity": 2.0,
+        }
+        self.assertFalse(pred_cbf.evaluate(rec_bad_margin))
+
+        # Record with is_safe=True and cbf_margin >= 0
+        rec_good_cbf = {
+            "is_safe": True,
+            "cbf_margin": 0.3,
+            "filtered_command": [10.0],
+            "human_proximity": 2.0,
+        }
+        self.assertTrue(pred_cbf.evaluate(rec_good_cbf))
+
+        # Record with torque exceeding 150.0 Nm
+        rec_high_torque = {
+            "is_safe": True,
+            "filtered_command": [160.0, 10.0],
+            "human_proximity": 2.0,
+        }
+        self.assertFalse(pred_torque.evaluate(rec_high_torque))
+
+        # Record with torque within 150.0 Nm
+        rec_good_torque = {
+            "is_safe": True,
+            "filtered_command": [140.0, 10.0],
+            "human_proximity": 2.0,
+        }
+        self.assertTrue(pred_torque.evaluate(rec_good_torque))
+
+        # Record with proximity < 1.50 m
+        rec_close_human = {
+            "is_safe": True,
+            "human_proximity": 1.2,
+        }
+        self.assertFalse(pred_collab.evaluate(rec_close_human))
+
+        # Record with proximity >= 1.50 m
+        rec_safe_human = {
+            "is_safe": True,
+            "human_proximity": 1.8,
+        }
+        self.assertTrue(pred_collab.evaluate(rec_safe_human))
 
 
 if __name__ == "__main__":

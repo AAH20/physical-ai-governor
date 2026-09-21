@@ -18,6 +18,15 @@ def _check_finite(val: Any) -> bool:
     return isinstance(val, (int, float)) and not math.isnan(val) and not math.isinf(val)
 
 
+def _check_vec3(vec: Any) -> bool:
+    """Validates that a vector is a list or tuple of exactly 3 finite numbers."""
+    return (
+        isinstance(vec, (tuple, list))
+        and len(vec) == 3
+        and all(_check_finite(x) for x in vec)
+    )
+
+
 @dataclass
 class SafetyDecision:
     """Outcome of a real-time Control Barrier Function evaluation."""
@@ -73,24 +82,25 @@ class ControlBarrierFilter:
         Evaluates physical barrier constraints and computes safe actuator commands.
         """
         original = packet.command_torque_input
-        n = len(original)
+        n = len(original) if isinstance(original, (list, tuple)) else 0
 
-        # Validate finite inputs (guard against NaN / Inf)
+        # Validate finite inputs and exact 3D vector dimensions (guard against NaN / Inf / malformed vectors)
         if (
-            not all(_check_finite(x) for x in original)
+            not isinstance(original, (list, tuple))
+            or not all(_check_finite(x) for x in original)
             or not _check_finite(packet.human_distance_meters)
-            or not all(_check_finite(x) for x in packet.velocity_xyz)
-            or not all(_check_finite(x) for x in packet.position_xyz)
-            or (packet.human_relative_position_xyz and not all(_check_finite(x) for x in packet.human_relative_position_xyz))
-            or (packet.human_velocity_xyz and not all(_check_finite(x) for x in packet.human_velocity_xyz))
+            or not _check_vec3(packet.position_xyz)
+            or not _check_vec3(packet.velocity_xyz)
+            or (packet.human_relative_position_xyz is not None and not _check_vec3(packet.human_relative_position_xyz))
+            or (packet.human_velocity_xyz is not None and not _check_vec3(packet.human_velocity_xyz))
         ):
             return SafetyDecision(
                 is_safe=False,
-                original_command=original,
+                original_command=list(original) if isinstance(original, (list, tuple)) else [],
                 filtered_command=[0.0] * n,
                 cbf_margin=-1.0,
                 intervention_triggered=True,
-                violation_reason="INVALID_INPUT: Non-finite values (NaN/Inf) detected in telemetry packet. Engaged fail-safe protective stop.",
+                violation_reason="INVALID_INPUT: Non-finite values (NaN/Inf) or invalid vector dimensions (must be exact 3D XYZ) detected in telemetry packet. Engaged fail-safe protective stop.",
                 decision_status="INVALID_INPUT",
             )
 
@@ -204,7 +214,28 @@ class QPSafetyFilter:
         control_matrix_g maps actuator commands to position/velocity dynamics: x_dot = f(x) + g(x) * u.
         """
         u_nom = packet.command_torque_input
-        n = len(u_nom)
+        n = len(u_nom) if isinstance(u_nom, (list, tuple)) else 0
+
+        # Validate finite inputs and exact 3D vector dimensions (guard against NaN / Inf / malformed vectors)
+        if (
+            not isinstance(u_nom, (list, tuple))
+            or not all(_check_finite(x) for x in u_nom)
+            or not _check_finite(packet.human_distance_meters)
+            or not _check_vec3(packet.position_xyz)
+            or not _check_vec3(packet.velocity_xyz)
+            or (packet.human_relative_position_xyz is not None and not _check_vec3(packet.human_relative_position_xyz))
+            or (packet.human_velocity_xyz is not None and not _check_vec3(packet.human_velocity_xyz))
+        ):
+            return SafetyDecision(
+                is_safe=False,
+                original_command=list(u_nom) if isinstance(u_nom, (list, tuple)) else [],
+                filtered_command=[0.0] * n,
+                cbf_margin=-1.0,
+                intervention_triggered=True,
+                violation_reason="INVALID_INPUT: Non-finite values (NaN/Inf) or invalid vector dimensions (must be exact 3D XYZ) detected in telemetry packet. Engaged fail-safe protective stop.",
+                decision_status="INVALID_INPUT",
+            )
+
         if n == 0:
             return SafetyDecision(
                 is_safe=True,
@@ -214,25 +245,6 @@ class QPSafetyFilter:
                 intervention_triggered=False,
                 violation_reason=None,
                 decision_status="SAFE_NOMINAL",
-            )
-
-        # Validate finite inputs (guard against NaN / Inf)
-        if (
-            not all(_check_finite(x) for x in u_nom)
-            or not _check_finite(packet.human_distance_meters)
-            or not all(_check_finite(x) for x in packet.velocity_xyz)
-            or not all(_check_finite(x) for x in packet.position_xyz)
-            or (packet.human_relative_position_xyz and not all(_check_finite(x) for x in packet.human_relative_position_xyz))
-            or (packet.human_velocity_xyz and not all(_check_finite(x) for x in packet.human_velocity_xyz))
-        ):
-            return SafetyDecision(
-                is_safe=False,
-                original_command=u_nom,
-                filtered_command=[0.0] * n,
-                cbf_margin=-1.0,
-                intervention_triggered=True,
-                violation_reason="INVALID_INPUT: Non-finite values (NaN/Inf) detected in telemetry packet. Engaged fail-safe protective stop.",
-                decision_status="INVALID_INPUT",
             )
 
         # Cross-validate distance measurements if relative position vector is provided

@@ -46,16 +46,40 @@ class MerkleBlackBoxLedger:
         self.leaf_hashes: List[str] = []
         self.records: List[Dict[str, Any]] = []
 
+    @staticmethod
+    def compute_canonical_record_hash(record: Dict[str, Any]) -> str:
+        """
+        Computes canonical SHA-256 leaf digest of an opened record dictionary or telemetry cycle.
+        Normalizes vector types (tuples/lists) to ensure identical digest derivation.
+        """
+        pos = tuple(record.get("position", ())) if isinstance(record.get("position"), (list, tuple)) else record.get("position")
+        vel = tuple(record.get("velocity", ())) if isinstance(record.get("velocity"), (list, tuple)) else record.get("velocity")
+        cmd = list(record.get("filtered_command", [])) if isinstance(record.get("filtered_command"), (list, tuple)) else record.get("filtered_command")
+        prox = record.get("human_proximity")
+        if prox is None:
+            prox = record.get("human_distance_meters")
+
+        payload = (
+            f"{record.get('robot_id')}:{record.get('timestamp_ns')}:{pos}:"
+            f"{vel}:{prox}:{record.get('is_safe')}:"
+            f"{cmd}"
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
     def compute_packet_hash(
         self, packet: RobotTelemetryPacket, decision: SafetyDecision
     ) -> str:
         """Computes SHA-256 digest of physical state and safety filter decision."""
-        payload = (
-            f"{packet.robot_id}:{packet.timestamp_ns}:{packet.position_xyz}:"
-            f"{packet.velocity_xyz}:{packet.human_distance_meters}:{decision.is_safe}:"
-            f"{decision.filtered_command}"
-        ).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
+        rec = {
+            "robot_id": packet.robot_id,
+            "timestamp_ns": packet.timestamp_ns,
+            "position": tuple(packet.position_xyz),
+            "velocity": tuple(packet.velocity_xyz),
+            "human_proximity": packet.human_distance_meters,
+            "is_safe": decision.is_safe,
+            "filtered_command": list(decision.filtered_command),
+        }
+        return self.compute_canonical_record_hash(rec)
 
     def append_record(
         self, packet: RobotTelemetryPacket, decision: SafetyDecision

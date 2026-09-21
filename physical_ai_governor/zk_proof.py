@@ -50,6 +50,8 @@ class SafetyPredicate:
         """Evaluates whether an opened cycle record satisfies this predicate."""
         if self.name == "min_human_distance":
             val = record.get("human_proximity")
+            if val is None:
+                val = record.get("human_distance_meters")
             if val is None or not isinstance(val, (int, float)) or not math.isfinite(val):
                 return False
             return float(val) >= (float(self.threshold) - 1e-6)
@@ -64,13 +66,40 @@ class SafetyPredicate:
                 return False
             vel_mag = math.sqrt(sum(v * v for v in vel))
             return vel_mag <= (float(self.threshold) + 1e-6)
-        elif self.name in (
-            "forward_invariance_cbf_simulated",
-            "CBF_FORWARD_INVARIANCE_HOLDS",
-            "ISO_10218_TORQUE_LIMIT_SATISFIED",
-            "COLLABORATIVE_SEPARATION_MAINTAINED",
-        ):
-            return bool(record.get("is_safe", False))
+        elif self.name == "CBF_FORWARD_INVARIANCE_HOLDS":
+            is_safe = bool(record.get("is_safe", False))
+            margin = record.get("cbf_margin")
+            status = record.get("decision_status")
+            if margin is not None:
+                margin_ok = isinstance(margin, (int, float)) and math.isfinite(margin) and margin >= 0
+            elif status is not None:
+                margin_ok = status in ("SAFE_NOMINAL", "SAFE_FILTERED")
+            else:
+                margin_ok = is_safe
+            return is_safe and margin_ok
+        elif self.name == "ISO_10218_TORQUE_LIMIT_SATISFIED":
+            is_safe = bool(record.get("is_safe", False))
+            torques = record.get("filtered_command") or record.get("original_command") or []
+            if not torques:
+                return is_safe
+            if not all(isinstance(t, (int, float)) and math.isfinite(t) for t in torques):
+                return False
+            limit = float(self.threshold) if self.threshold is not None else 150.0
+            return max(abs(t) for t in torques) <= (limit + 1e-6) and is_safe
+        elif self.name == "COLLABORATIVE_SEPARATION_MAINTAINED":
+            val = record.get("human_proximity")
+            if val is None:
+                val = record.get("human_distance_meters")
+            if val is None or not isinstance(val, (int, float)) or not math.isfinite(val):
+                return False
+            limit = float(self.threshold) if self.threshold is not None else 1.50
+            return float(val) >= (limit - 1e-6)
+        elif self.name == "forward_invariance_cbf_simulated":
+            is_safe = bool(record.get("is_safe", False))
+            status = record.get("decision_status")
+            if status is not None:
+                return is_safe and status in ("SAFE_NOMINAL", "SAFE_FILTERED")
+            return is_safe
         return False
 
 
@@ -169,7 +198,7 @@ class BlindedOpeningPackage:
 class EnvelopeVerificationStatus:
     """Result of comprehensive envelope and opening package verification."""
     is_valid: bool
-    status: str  # "PREDICATES_VERIFIED", "PARTIALLY_OPENED", "STRUCTURE_VALID", "INVALID_STRUCTURE", "PREDICATE_FAILED"
+    status: str  # "PREDICATES_VERIFIED", "SELF_ASSERTED_PREDICATES_VERIFIED", "PARTIALLY_OPENED", "STRUCTURE_VALID", "INVALID_STRUCTURE", "PREDICATE_FAILED"
     cycles_verified: int
     total_cycles: int
     errors: List[str]
@@ -369,9 +398,10 @@ class BlindedSafetyProver:
         """
         Verifies the opening proof for a specific cycle in the commitment envelope:
         1. Checks hash consistency with the blinded commitment and Fiat-Shamir response proof.
-        2. Validates Merkle inclusion of leaf_hash against envelope.merkle_root (if proof supplied).
-        3. Evaluates revealed values against all certified safety predicates in the envelope.
-        Returns True ONLY if hash consistency, Merkle inclusion, AND predicate compliance all hold.
+        2. Validates Merkle inclusion of leaf_hash against envelope.merkle_root (strictly mandatory).
+        3. Validates canonical record leaf re-hashing and leaf binding if full_record payload is provided.
+        4. Evaluates revealed values against all certified safety predicates in the envelope.
+        Returns True ONLY if hash consistency, Merkle inclusion, canonical leaf binding, AND predicate compliance all hold.
         """
         if cycle_index < 0 or cycle_index >= envelope.total_cycles_proven:
             return False
@@ -390,12 +420,27 @@ class BlindedSafetyProver:
         if envelope.response_proofs[cycle_index] != expected_resp:
             return False
 
-        # 3. Verify Merkle inclusion if proof is provided
-        if merkle_proof is not None:
-            if not MerkleBlackBoxLedger.verify_audit_proof(leaf_hash, merkle_proof, envelope.merkle_root):
+        # 3. Verify Merkle inclusion (mandatory proof required)
+        if merkle_proof is None:
+            return False
+        if not MerkleBlackBoxLedger.verify_audit_proof(leaf_hash, merkle_proof, envelope.merkle_root):
+            return False
+
+        # 4. Canonical record re-hashing and leaf binding (prevent payload substitution)
+        if full_record is not None:
+            recomputed_leaf = MerkleBlackBoxLedger.compute_canonical_record_hash(full_record)
+            if recomputed_leaf != leaf_hash:
+                return False
+            rec_safe = full_record.get("is_safe")
+            if rec_safe is not None and bool(rec_safe) != bool(is_safe):
+                return False
+            rec_prox = full_record.get("human_proximity")
+            if rec_prox is None:
+                rec_prox = full_record.get("human_distance_meters")
+            if rec_prox is not None and abs(float(rec_prox) - float(human_proximity)) > 1e-5:
                 return False
 
-        # 4. Evaluate all certified invariants against revealed values
+        # 5. Evaluate all certified invariants against revealed values
         rec_data = dict(full_record or {})
         rec_data.setdefault("is_safe", is_safe)
         rec_data.setdefault("human_proximity", human_proximity)
@@ -418,10 +463,11 @@ class BlindedSafetyProver:
         """
         Verifies an entire opening package against a blinded safety envelope:
         - Verifies structural validity of the envelope.
-        - Verifies binding to the claimed Merkle root.
+        - Verifies binding to the claimed Merkle root, proof_id, robot_id, and total cycle count.
         - Verifies that all claimed cycles are opened with valid Merkle inclusion proofs.
-        - Evaluates all certified safety predicates across all revealed cycle states.
-        Returns EnvelopeVerificationStatus with status 'PREDICATES_VERIFIED' on full satisfaction.
+        - Evaluates all certified safety predicates across all revealed cycle states dynamically.
+        Returns EnvelopeVerificationStatus with status 'PREDICATES_VERIFIED' (if expected root matched)
+        or 'SELF_ASSERTED_PREDICATES_VERIFIED' (if expected root omitted) on full satisfaction.
         """
         errors: List[str] = []
         pred_results: Dict[str, bool] = {}
@@ -438,8 +484,19 @@ class BlindedSafetyProver:
                 predicate_results=pred_results,
             )
 
+        # Validate package identity and cycle count binding
+        if package.proof_id != envelope.proof_id:
+            errors.append(f"Opening package proof_id '{package.proof_id}' does not match envelope proof_id '{envelope.proof_id}'")
+        if package.robot_id != envelope.robot_id:
+            errors.append(f"Opening package robot_id '{package.robot_id}' does not match envelope robot_id '{envelope.robot_id}'")
+        if package.total_cycles != envelope.total_cycles_proven:
+            errors.append(f"Opening package total_cycles ({package.total_cycles}) does not match envelope total_cycles_proven ({envelope.total_cycles_proven})")
         if package.merkle_root != envelope.merkle_root:
             errors.append(f"Opening package root '{package.merkle_root}' does not match envelope root '{envelope.merkle_root}'")
+        if len(package.openings) != envelope.total_cycles_proven:
+            errors.append(f"Opening package openings count ({len(package.openings)}) does not match envelope total_cycles_proven ({envelope.total_cycles_proven})")
+
+        if errors:
             return EnvelopeVerificationStatus(
                 is_valid=False,
                 status="INVALID_STRUCTURE",
@@ -469,7 +526,7 @@ class BlindedSafetyProver:
                 predicate_results=pred_results,
             )
 
-        # 2. Verify openings
+        # 2. Verify openings and track dynamic per-predicate evaluations
         verified_count = 0
         seen_indices = set()
 
@@ -490,6 +547,16 @@ class BlindedSafetyProver:
                 merkle_proof=opening.merkle_proof,
                 full_record=opening.record_payload,
             )
+
+            # Dynamically track per-predicate evaluations on each revealed record
+            rec_data = dict(opening.record_payload or {})
+            rec_data.setdefault("is_safe", opening.is_safe)
+            rec_data.setdefault("human_proximity", opening.human_proximity)
+
+            for pred in predicates:
+                if not pred.evaluate(rec_data):
+                    pred_results[pred.raw_claim] = False
+
             if not ok:
                 errors.append(f"Opening verification failed for cycle {idx} (Merkle proof, hash, or predicate violated)")
             else:
@@ -499,7 +566,10 @@ class BlindedSafetyProver:
             status = "PREDICATE_FAILED"
             is_valid = False
         elif verified_count == envelope.total_cycles_proven:
-            status = "PREDICATES_VERIFIED"
+            if expected_merkle_root is not None:
+                status = "PREDICATES_VERIFIED"
+            else:
+                status = "SELF_ASSERTED_PREDICATES_VERIFIED"
             is_valid = True
         elif verified_count > 0:
             status = "PARTIALLY_OPENED"
