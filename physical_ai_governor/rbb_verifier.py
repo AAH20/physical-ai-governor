@@ -58,6 +58,24 @@ def _verify_hmac_sig(secret: bytes, domain: str, event_digest: str, sig_b64: str
     return hmac.compare_digest(sig_b64, expected_sig)
 
 
+def _validate_auth_algorithm(auth: Dict[str, Any], key_id: str, trust_key_info: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    Validates declared authentication algorithm against policy.
+    Rejects algorithm confusion (e.g. labeling HMAC as ed25519) and unsupported algorithms.
+    Returns error string if invalid, or None if valid.
+    """
+    algo = auth.get("algorithm", "")
+    if not algo:
+        return f"ALGORITHM_MISMATCH: Missing 'algorithm' in authentication block for key '{key_id}'"
+    if algo != "sha256-hmac":
+        return f"ALGORITHM_MISMATCH: Declared algorithm '{algo}' is not supported or conflicts with key policy for key '{key_id}'. Only 'sha256-hmac' is supported."
+    if trust_key_info and isinstance(trust_key_info, dict):
+        trust_algo = trust_key_info.get("algorithm")
+        if trust_algo and trust_algo != algo:
+            return f"ALGORITHM_MISMATCH: Declared algorithm '{algo}' conflicts with trust metadata '{trust_algo}' for key '{key_id}'"
+    return None
+
+
 class RobotBlackBoxVerifier:
     """
     Independent bundle verifier for Robot Black Box (.rbb) evidence records.
@@ -261,6 +279,10 @@ class RobotBlackBoxVerifier:
                     checks_passed.append("manifest_body_digest_verified")
 
                 m_key_id = manifest_auth.get("key_id", "")
+                m_algo_err = _validate_auth_algorithm(manifest_auth, m_key_id, producers.get(m_key_id))
+                if m_algo_err:
+                    errors.append(f"Manifest: {m_algo_err}")
+
                 if m_key_id in producers and producers[m_key_id].get("revoked", False):
                     errors.append(f"Manifest signed by revoked key_id: '{m_key_id}'")
 
@@ -341,6 +363,10 @@ class RobotBlackBoxVerifier:
 
                 # Key trust and revocation check
                 evt_key_id = auth.get("key_id", "")
+                e_algo_err = _validate_auth_algorithm(auth, evt_key_id, producers.get(evt_key_id))
+                if e_algo_err:
+                    errors.append(f"Event {i+1}: {e_algo_err}")
+
                 if evt_key_id in producers and producers[evt_key_id].get("revoked", False):
                     errors.append(f"Event {i+1} signed by revoked key_id: '{evt_key_id}'")
 
@@ -457,6 +483,10 @@ class RobotBlackBoxVerifier:
                 # Check signatures in AUTHENTICATED mode
                 if norm_mode == "AUTHENTICATED":
                     cp_key_id = cp_auth.get("key_id", "")
+                    cp_algo_err = _validate_auth_algorithm(cp_auth, cp_key_id, producers.get(cp_key_id))
+                    if cp_algo_err:
+                        errors.append(f"Checkpoint {j+1}: {cp_algo_err}")
+
                     cp_sec = trusted_producers.get(cp_key_id) or trusted_producers.get("_fallback_")
                     if not cp_sec:
                         errors.append(f"Checkpoint {j+1} signed by untrusted producer key_id: '{cp_key_id}'")
@@ -466,6 +496,10 @@ class RobotBlackBoxVerifier:
                             errors.append(f"Checkpoint {j+1} signature verification failed against external trusted key")
 
                     rc_key_id = rc_auth.get("key_id", "")
+                    rc_algo_err = _validate_auth_algorithm(rc_auth, rc_key_id, witnesses.get(rc_key_id))
+                    if rc_algo_err:
+                        errors.append(f"Checkpoint receipt {j+1}: {rc_algo_err}")
+
                     # Independent witness check: witness key must not equal checkpoint producer key
                     if rc_key_id == cp_key_id and not allow_self_witness:
                         errors.append(
@@ -518,6 +552,10 @@ class RobotBlackBoxVerifier:
                 # In AUTHENTICATED mode, cryptographically verify the latest-head receipt signature against trusted witness
                 if norm_mode == "AUTHENTICATED":
                     hr_key_id = hr_auth.get("key_id", "")
+                    hr_algo_err = _validate_auth_algorithm(hr_auth, hr_key_id, witnesses.get(hr_key_id))
+                    if hr_algo_err:
+                        errors.append(f"Witness latest-heads: {hr_algo_err}")
+
                     if not hr_key_id or not hr_auth.get("signature"):
                         errors.append("Witness latest-heads receipt is missing authentication credentials")
                     else:

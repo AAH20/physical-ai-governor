@@ -225,10 +225,10 @@ def cmd_zk_prove(args: argparse.Namespace) -> int:
     print(f"  Proof ID:                    {envelope.proof_id}")
     print(f"  Robot ID:                    {envelope.robot_id}")
     print(f"  Merkle Root Anchor:          {envelope.merkle_root}")
-    print(f"  Cycles Proven:               {envelope.total_cycles_proven}")
+    print(f"  Cycles Committed:            {envelope.total_cycles_proven}")
     print(f"  Fiat-Shamir Challenge:       {envelope.challenge_hash[:20]}...")
-    print(f"  Blinded Envelope Verified:   {is_valid}")
-    print("  Invariants Enforced (Zero Coordinate Leakage):")
+    print(f"  Commitment Structure Valid:  {is_valid}")
+    print("  Invariants Claimed in Commitment (Zero Coordinate Leakage):")
     for inv in envelope.invariants_certified:
         print(f"    • {inv}")
     print("=" * 65)

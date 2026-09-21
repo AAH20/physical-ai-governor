@@ -1289,6 +1289,209 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         # Retreating robot is allowed higher positive command effort than approaching robot
         self.assertGreater(dec_retreat.filtered_command[0], dec_approach.filtered_command[0])
 
+    def test_blinded_commitment_parse_invariants_rejects_non_finite(self) -> None:
+        """
+        Adversarial audit gap 6 check:
+        Verifies that parse_invariant_claim rejects non-finite thresholds ('nan', 'inf')
+        and negative or out-of-domain bounds, requiring valid units and finite floats.
+        """
+        from physical_ai_governor.zk_proof import parse_invariant_claim, validate_invariant_claim
+
+        self.assertFalse(validate_invariant_claim("min_human_distance >= nanm"))
+        self.assertFalse(validate_invariant_claim("min_human_distance >= infm"))
+        self.assertFalse(validate_invariant_claim("min_human_distance >= -1.5m"))
+        self.assertFalse(validate_invariant_claim("max_joint_torque <= nanNm"))
+        self.assertFalse(validate_invariant_claim("max_velocity <= 0.0m/s"))
+
+        pred = parse_invariant_claim("min_human_distance >= 1.5m")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred.threshold, 1.5)
+        self.assertEqual(pred.unit, "m")
+        self.assertTrue(validate_invariant_claim("min_human_distance >= 1.5m"))
+
+    def test_blinded_commitment_opening_package_and_predicate_verification(self) -> None:
+        """
+        Adversarial audit gap 1 & 3 check:
+        Verifies that generate_envelope_with_openings produces an exportable opening package,
+        and verify_opening_package verifies Merkle inclusion and safety predicates across all cycles.
+        """
+        from physical_ai_governor.zk_proof import BlindedSafetyProver
+
+        pkt = self.ingestor.parse_humanoid_joint_state("bot_opening", 1000, (0, 0, 1), (0, 0, 0), [10], [10], 2.5, 90)
+        dec = self.filter.evaluate_safety(pkt)
+        self.blackbox.append_record(pkt, dec)
+
+        prover = BlindedSafetyProver()
+        envelope, package = prover.generate_envelope_with_openings(self.blackbox, robot_id="bot_opening")
+        self.assertEqual(package.total_cycles, 1)
+        self.assertEqual(len(package.openings), 1)
+
+        # Full opening package verification
+        status = BlindedSafetyProver.verify_opening_package(envelope, package)
+        self.assertTrue(status.is_valid)
+        self.assertEqual(status.status, "PREDICATES_VERIFIED")
+        self.assertEqual(status.cycles_verified, 1)
+
+    def test_blinded_commitment_rejects_unsafe_opening(self) -> None:
+        """
+        Adversarial audit gap 2 check:
+        Verifies that verify_opening evaluates revealed values against certified safety predicates.
+        Revealing an unsafe distance (e.g. 0.1m) for a commitment claiming min_human_distance >= 1.5m
+        MUST be rejected even if hash consistency matches.
+        """
+        import hashlib
+        from physical_ai_governor.zk_proof import BlindedSafetyProver, BlindedSafetyEnvelope
+
+        merkle_root = "aa" * 32
+        invariants = ["min_human_distance >= 1.5m", "forward_invariance_cbf_simulated == True"]
+        r_blind = "11" * 16
+        leaf_hash = "bb" * 32
+
+        # Attacker crafts hash matching unsafe distance 0.1m
+        unsafe_prox = 0.1
+        is_safe = True
+        payload = f"{leaf_hash}:{is_safe}:{unsafe_prox}:{r_blind}".encode()
+        commit = hashlib.sha256(payload).hexdigest()
+
+        fiat_shamir = f"{merkle_root}:{','.join(invariants)}:{commit}".encode()
+        challenge = hashlib.sha256(fiat_shamir).hexdigest()
+
+        resp_input = f"{challenge}:{commit}:{r_blind}:{is_safe}".encode()
+        resp = hashlib.sha256(resp_input).hexdigest()
+
+        envelope = BlindedSafetyEnvelope(
+            proof_id="unsafe-test",
+            robot_id="attacker-bot",
+            merkle_root=merkle_root,
+            total_cycles_proven=1,
+            invariants_certified=invariants,
+            challenge_hash=challenge,
+            response_proofs=[resp],
+            blinded_commitments=[commit],
+            timestamp=100.0,
+        )
+
+        # verify_opening must reject the unsafe distance despite valid hash commitment
+        res = BlindedSafetyProver.verify_opening(
+            envelope=envelope,
+            cycle_index=0,
+            leaf_hash=leaf_hash,
+            is_safe=is_safe,
+            human_proximity=unsafe_prox,
+            blinding_factor=r_blind,
+        )
+        self.assertFalse(res)
+
+    def test_blinded_commitment_rejects_invalid_merkle_proof(self) -> None:
+        """
+        Adversarial audit gap 2 check:
+        Verifies that verify_opening rejects an opening when the Merkle inclusion proof is invalid.
+        """
+        from physical_ai_governor.zk_proof import BlindedSafetyProver
+
+        pkt = self.ingestor.parse_humanoid_joint_state("bot_mp", 1000, (0, 0, 1), (0, 0, 0), [10], [10], 2.5, 90)
+        dec = self.filter.evaluate_safety(pkt)
+        self.blackbox.append_record(pkt, dec)
+
+        prover = BlindedSafetyProver()
+        envelope, package = prover.generate_envelope_with_openings(self.blackbox, robot_id="bot_mp")
+        op0 = package.openings[0]
+
+        # Corrupted Merkle proof
+        fake_merkle_proof = [("deadbeef" * 8, "left")]
+        res = BlindedSafetyProver.verify_opening(
+            envelope=envelope,
+            cycle_index=0,
+            leaf_hash=op0.leaf_hash,
+            is_safe=op0.is_safe,
+            human_proximity=op0.human_proximity,
+            blinding_factor=op0.blinding_factor,
+            merkle_proof=fake_merkle_proof,
+        )
+        self.assertFalse(res)
+
+    def test_control_barrier_rejects_conflicting_distance_measurements(self) -> None:
+        """
+        Adversarial audit gap 4 check:
+        Verifies that when scalar human_distance_meters and norm(human_relative_position_xyz)
+        disagree beyond sensor uncertainty, both CBF and QP-CBF reject the packet with
+        INVALID_INPUT and engage a fail-safe protective stop.
+        """
+        from physical_ai_governor.control_barrier import ControlBarrierFilter, QPSafetyFilter
+
+        cbf = ControlBarrierFilter()
+        qp = QPSafetyFilter()
+
+        # Conflicting distance: scalar says 3.0m, but relative position vector norm is 0.1m
+        pkt_conflict = self.ingestor.parse_humanoid_joint_state(
+            robot_id="conflict_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 1.0),
+            base_vel=(0.0, 0.0, 0.0),
+            current_torques=[10.0, 10.0],
+            commanded_torques=[10.0, 10.0],
+            human_proximity=3.0,
+            battery=90.0,
+            human_relative_position_xyz=(0.1, 0.0, 0.0),  # norm = 0.1m, diff = 2.9m >> 0.50m
+            human_velocity_xyz=(0.0, 0.0, 0.0),
+        )
+
+        res_cbf = cbf.evaluate_safety(pkt_conflict)
+        self.assertFalse(res_cbf.is_safe)
+        self.assertEqual(res_cbf.decision_status, "INVALID_INPUT")
+        self.assertIn("SENSOR_DISCREPANCY", res_cbf.violation_reason)
+        self.assertEqual(res_cbf.filtered_command, [0.0, 0.0])
+
+        res_qp = qp.evaluate_safety_qp(pkt_conflict)
+        self.assertFalse(res_qp.is_safe)
+        self.assertEqual(res_qp.decision_status, "INVALID_INPUT")
+        self.assertIn("SENSOR_DISCREPANCY", res_qp.violation_reason)
+        self.assertEqual(res_qp.filtered_command, [0.0, 0.0])
+
+    def test_rbb_verifier_rejects_algorithm_confusion(self) -> None:
+        """
+        Adversarial audit gap 5 check:
+        Verifies that relabeling authentication algorithm from 'sha256-hmac' to 'ed25519'
+        is detected and fails closed with ALGORITHM_MISMATCH.
+        """
+        import tempfile
+        from physical_ai_governor.rbb_recorder import RobotBlackBoxRecorder
+        from physical_ai_governor.rbb_verifier import RobotBlackBoxVerifier
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/algo_confusion_bundle"
+            recorder = RobotBlackBoxRecorder(robot_id="algo_bot", tenant_ref="tenant-test")
+            recorder.start_run(task="security_check")
+            pkt = self.ingestor.parse_humanoid_joint_state(
+                robot_id="algo_bot",
+                timestamp_ns=1000,
+                base_pos=(0.0, 0.0, 1.0),
+                base_vel=(0.0, 0.0, 0.0),
+                current_torques=[10.0],
+                commanded_torques=[10.0],
+                human_proximity=2.5,
+                battery=90.0,
+            )
+            dec = self.filter.evaluate_safety(pkt)
+            recorder.record_safety_cycle(pkt, dec)
+            recorder.close_run()
+            recorder.export_bundle(bundle_dir)
+
+            # Change manifest authentication algorithm to ed25519
+            manifest_path = pathlib.Path(bundle_dir) / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["authentication"]["algorithm"] = "ed25519"
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+
+            report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=recorder.get_trusted_keys(),
+            )
+            self.assertFalse(report.is_valid)
+            self.assertFalse(report.is_authenticated)
+            self.assertTrue(any("ALGORITHM_MISMATCH" in e for e in report.errors))
+
 
 if __name__ == "__main__":
     unittest.main()

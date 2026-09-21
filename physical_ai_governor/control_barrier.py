@@ -94,6 +94,30 @@ class ControlBarrierFilter:
                 decision_status="INVALID_INPUT",
             )
 
+        # Cross-validate distance measurements if relative position vector is provided
+        effective_human_distance = packet.human_distance_meters
+        if packet.human_relative_position_xyz is not None:
+            r_vec = packet.human_relative_position_xyz
+            d_vec = math.sqrt(sum(x * x for x in r_vec))
+            discrepancy = abs(packet.human_distance_meters - d_vec)
+            allowed_tolerance = max(0.50, 0.25 * d_vec)
+            if discrepancy > allowed_tolerance:
+                return SafetyDecision(
+                    is_safe=False,
+                    original_command=original,
+                    filtered_command=[0.0] * n,
+                    cbf_margin=-1.0,
+                    intervention_triggered=True,
+                    violation_reason=(
+                        f"SENSOR_DISCREPANCY: Disagreement between scalar human_distance_meters ({packet.human_distance_meters:.2f}m) "
+                        f"and norm(human_relative_position_xyz) ({d_vec:.2f}m) exceeds tolerance ({allowed_tolerance:.2f}m). "
+                        "Engaged fail-safe protective stop."
+                    ),
+                    decision_status="INVALID_INPUT",
+                )
+            # Conservatively select minimum distance
+            effective_human_distance = min(packet.human_distance_meters, d_vec)
+
         filtered = list(original)
         intervened = False
         reasons: List[str] = []
@@ -110,14 +134,14 @@ class ControlBarrierFilter:
             ]
 
         # 2. Human Proximity Barrier: h_prox = d_human - d_safe
-        prox_margin = packet.human_distance_meters - self.min_human_distance_m
+        prox_margin = effective_human_distance - self.min_human_distance_m
         if prox_margin < 0:
             intervened = True
             reasons.append(
-                f"Human proximity ({packet.human_distance_meters:.2f}m) breaches safe barrier ({self.min_human_distance_m:.2f}m)"
+                f"Human proximity ({effective_human_distance:.2f}m) breaches safe barrier ({self.min_human_distance_m:.2f}m)"
             )
             # Apply emergency proportional damping to reduce actuator authority
-            damping_factor = max(0.0, packet.human_distance_meters / self.min_human_distance_m)
+            damping_factor = max(0.0, effective_human_distance / self.min_human_distance_m)
             filtered = [t * damping_factor for t in filtered]
 
         # 3. Speed Limit Barrier
@@ -211,6 +235,29 @@ class QPSafetyFilter:
                 decision_status="INVALID_INPUT",
             )
 
+        # Cross-validate distance measurements if relative position vector is provided
+        effective_human_distance = packet.human_distance_meters
+        if packet.human_relative_position_xyz is not None:
+            r_vec = packet.human_relative_position_xyz
+            d_vec = math.sqrt(sum(x * x for x in r_vec))
+            discrepancy = abs(packet.human_distance_meters - d_vec)
+            allowed_tolerance = max(0.50, 0.25 * d_vec)
+            if discrepancy > allowed_tolerance:
+                return SafetyDecision(
+                    is_safe=False,
+                    original_command=u_nom,
+                    filtered_command=[0.0] * n,
+                    cbf_margin=-1.0,
+                    intervention_triggered=True,
+                    violation_reason=(
+                        f"SENSOR_DISCREPANCY: Disagreement between scalar human_distance_meters ({packet.human_distance_meters:.2f}m) "
+                        f"and norm(human_relative_position_xyz) ({d_vec:.2f}m) exceeds tolerance ({allowed_tolerance:.2f}m). "
+                        "Engaged fail-safe protective stop."
+                    ),
+                    decision_status="INVALID_INPUT",
+                )
+            effective_human_distance = min(packet.human_distance_meters, d_vec)
+
         # Objective: 0.5 * u^T I u - u_nom^T u  <=> min 0.5 * ||u - u_nom||^2
         P = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
         q = [-float(val) for val in u_nom]
@@ -223,7 +270,7 @@ class QPSafetyFilter:
         reasons: List[str] = []
 
         # 1. Proximity Barrier: h_prox = d - d_safe >= 0
-        h_prox = packet.human_distance_meters - self.min_human_distance_m
+        h_prox = effective_human_distance - self.min_human_distance_m
         vel_mag = math.sqrt(sum(v * v for v in packet.velocity_xyz))
 
         # Directional relative Lie derivative L_f h(x) = \nabla h(x) \cdot f(x)

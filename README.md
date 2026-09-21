@@ -281,7 +281,7 @@ $$\tilde{d}_{\min}(\sigma) = \frac{d_{\min}}{1 - \min(\sigma, 0.60)}$$
 - **Adversarial VLA Perturbation Guard**: Jerk ($\dddot{q}$) and torque-rate limiting against adversarial prompt injections and hallucinated policy chattering.
 - **Whole-Body Kinodynamics Governor**: Yoshikawa manipulability and link-to-link self-collision barriers for humanoid dual-arm manipulators.
 - **Forensic Flight Incident Reconstruction**: Automated root-cause timeline analysis mapping incident traces to EU AI Act Article 72 and ISO 12100 reporting templates.
-- **Blinded Privacy Commitment Prover**: Fiat-Shamir invariance verification without revealing secret coordinates.
+- **Blinded Privacy Commitment Prover**: Commit-and-challenge scheme with opening proofs verifying safety predicates and Merkle inclusion without revealing proprietary coordinates.
 - **Simulated TPM 2.0 PCR Attestation**: Software reference mock of PCR 10/11/12 code and policy sealing for edge deployment.
 - **Swarm Reciprocal CBF**: Decentralized pairwise collision avoidance for multi-agent drone swarms.
 - **Built-in CLI**: Turnkey commands for benchmarking, privacy audit proofs, Swarm evaluation, RBB flight bundles, incident reports, and kinodynamics.
@@ -301,28 +301,37 @@ pip install -e .
 
 ---
 
-## 🚀 Quickstart
+## 🏃 Quickstart & Code Examples
 
-### 1. Minimal-Deviation QP-CBF Safety Filter with Control Matrix
+### 1. Ingest Telemetry & Evaluate CBF Safety
 
 ```python
-from physical_ai_governor import QPSafetyFilter, TelemetryIngestor
+from physical_ai_governor import TelemetryIngestor, ControlBarrierFilter
 
+# Ingest heterogeneous bipedal telemetry
 ingestor = TelemetryIngestor()
-qp_filter = QPSafetyFilter(min_human_distance_m=1.50, max_joint_torque_nm=150.0)
-
 packet = ingestor.parse_humanoid_joint_state(
-    robot_id="humanoid_gr00t_01",
-    timestamp_ns=1700000000000,
-    base_pos=(0.0, 0.0, 1.2),
-    base_vel=(0.8, 0.0, 0.0),
-    current_torques=[40.0, -35.0],
-    commanded_torques=[195.0, -210.0],  # Hazardous command exceeding 150 Nm
-    human_proximity=1.20,              # Breaches 1.50m safe boundary
-    battery=92.0,
+    robot_id="digit_biped_01",
+    timestamp_ns=1710000000000,
+    base_pos=(0.0, 0.0, 1.0),
+    base_vel=(1.2, 0.0, 0.0),
+    current_torques=[45.0, -32.0, 88.0],
+    commanded_torques=[180.0, -40.0, 160.0],  # Breaches 150Nm limit!
+    human_proximity=1.10,                      # Breaches 1.50m safety perimeter!
+    battery=85.0,
 )
 
-# Optional control matrix g(x) mapping actuator inputs to barrier dynamics
+# Pass through CBF safety governor
+cbf = ControlBarrierFilter(min_human_distance_m=1.50, max_joint_torque_nm=150.0)
+decision = cbf.evaluate_safety(packet)
+
+print(f"Intervention Triggered: {decision.intervention_triggered}")
+print(f"Safe Filtered Torques: {decision.filtered_command}")
+print(f"CBF Safety Margin: {decision.cbf_margin}m")
+```
+
+Optional control matrix g(x) mapping actuator inputs to barrier dynamics
+```python
 control_matrix_g = [[0.8, -0.6]]
 decision = qp_filter.evaluate_safety_qp(packet, control_matrix_g=control_matrix_g)
 print(f"Safe: {decision.is_safe}")
@@ -388,17 +397,21 @@ print(f"Merkle Inclusion Proof Verified: {is_valid}")
 ```python
 from physical_ai_governor import BlindedSafetyProver
 
-# Prove barrier compliance commitments without disclosing trajectory waypoints or coordinates
+# Generate barrier compliance commitments and exportable opening package
 prover = BlindedSafetyProver()
-envelope = prover.generate_blinded_envelope(ledger, robot_id="stealth_humanoid_01")
+envelope, openings = prover.generate_envelope_with_openings(ledger, robot_id="stealth_humanoid_01")
 
 print(f"Proof ID: {envelope.proof_id}")
 print(f"Fiat-Shamir Challenge: {envelope.challenge_hash[:16]}...")
-print(f"Cycles Certified: {envelope.total_cycles_proven}")
+print(f"Cycles Committed: {envelope.total_cycles_proven}")
 
-# Third-party verification (zero coordinate knowledge required)
+# Third-party structural commitment verification (zero coordinate knowledge required)
 verified = BlindedSafetyProver.verify_blinded_envelope(envelope)
-print(f"Blinded Safety Envelope Valid: {verified}")
+print(f"Commitment Structure Valid: {verified}")
+
+# Full audit opening verification (verifies Merkle inclusion and predicate compliance)
+status = BlindedSafetyProver.verify_opening_package(envelope, openings)
+print(f"Predicate Audit Status: {status.status}")
 ```
 
 ### 6. Simulated TPM 2.0 PCR Attestation Profile
