@@ -344,6 +344,77 @@ def cmd_rbb_verify(args: argparse.Namespace) -> int:
     return 0 if report.is_valid else 2
 
 
+def cmd_incident_report(args: argparse.Namespace) -> int:
+    """Reconstructs and analyzes post-market incidents from RBB bundles or ledgers."""
+    from .incident_reconstructor import IncidentReconstructor
+
+    print(f"📋 Generating Forensic Flight Incident Report for: {args.bundle}")
+    report = IncidentReconstructor.reconstruct_from_rbb_bundle(args.bundle)
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print("=" * 65)
+        print("  FORENSIC FLIGHT INCIDENT & CAUSALITY REPORT")
+        print("=" * 65)
+        print(f"  Report ID:                   {report.report_id}")
+        print(f"  Robot / Run ID:              {report.robot_id}")
+        print(f"  Incident Severity:           {report.incident_severity}")
+        print(f"  Total Cycles Analyzed:       {report.total_cycles_analyzed}")
+        print(f"  Interventions Detected:      {report.interventions_detected}")
+        print(f"  Min Human Proximity:         {report.min_human_distance_recorded_m} m")
+        print(f"  Primary Root Cause:          {report.primary_root_cause}")
+        print("  Causality Timeline:")
+        for cause in report.causality_tree[:5]:
+            print(f"    • {cause}")
+        print("  Regulatory Statutory Findings:")
+        for find in report.regulatory_statutory_findings:
+            print(f"    ⚖️  {find}")
+        print("=" * 65)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(json.dumps(report.to_dict(), indent=2))
+        print(f"✅ Forensic report saved to: {args.output}")
+    return 0
+
+
+def cmd_kinodynamics_eval(args: argparse.Namespace) -> int:
+    """Evaluates humanoid whole-body self-collision and manipulability barriers."""
+    from .whole_body_kinodynamics import WholeBodyKinodynamicsGovernor
+
+    print(f"🦾 Evaluating Humanoid Whole-Body Kinodynamics & Singularity Barriers...")
+    gov = WholeBodyKinodynamicsGovernor(min_manipulability=args.min_manip, min_self_collision_distance_m=0.12)
+
+    link_positions = {
+        "left_hand": (0.20, 0.15, 0.95),
+        "right_hand": (0.22, -0.15, 0.95),
+        "torso": (0.0, 0.0, 0.90),
+        "left_foot": (0.0, 0.12, 0.0),
+        "right_foot": (0.0, -0.12, 0.0),
+    }
+    joint_angles = [args.joint1, args.joint2, args.joint3]
+    cmd_vels = [1.2, -0.8, 0.5]
+
+    state = gov.evaluate_whole_body_safety(link_positions, joint_angles, cmd_vels)
+
+    print("=" * 65)
+    print("  WHOLE-BODY KINODYNAMICS & SINGULARITY STATUS")
+    print("=" * 65)
+    print(f"  State Feasible:              {state.is_safe}")
+    print(f"  Yoshikawa Manipulability:    {state.manipulability_index} (min: {state.min_allowed_manipulability})")
+    print(f"  Min Self-Distance:           {state.min_self_distance_m} m")
+    print(f"  Self-Collision Margin:       {state.self_collision_margin_m} m")
+    print(f"  Commanded Velocities:        {cmd_vels}")
+    print(f"  Safe Filtered Velocities:    {state.filtered_joint_velocities}")
+    if state.interventions:
+        print("  Active Interventions:")
+        for intv in state.interventions:
+            print(f"    ⚠️  {intv}")
+    print("=" * 65)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="physical-ai-governor",
@@ -402,6 +473,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_ver.add_argument("--bundle", "-b", type=str, required=True, help="Path to RBB bundle directory")
     p_ver.add_argument("--json", action="store_true", help="Output verification report in raw JSON")
     p_ver.set_defaults(func=cmd_rbb_verify)
+
+    # incident-report
+    p_inc = subparsers.add_parser("incident-report", help="Forensic flight incident reconstruction report")
+    p_inc.add_argument("--bundle", "-b", type=str, required=True, help="Path to RBB bundle directory")
+    p_inc.add_argument("--output", "-o", type=str, default=None, help="Output JSON path")
+    p_inc.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_inc.set_defaults(func=cmd_incident_report)
+
+    # kinodynamics-eval
+    p_kino = subparsers.add_parser("kinodynamics-eval", help="Evaluate humanoid whole-body kinodynamics")
+    p_kino.add_argument("--min-manip", type=float, default=0.05, help="Minimum Yoshikawa manipulability")
+    p_kino.add_argument("--joint1", type=float, default=0.5, help="Joint 1 angle (rad)")
+    p_kino.add_argument("--joint2", type=float, default=0.4, help="Joint 2 angle (rad)")
+    p_kino.add_argument("--joint3", type=float, default=-0.3, help="Joint 3 angle (rad)")
+    p_kino.set_defaults(func=cmd_kinodynamics_eval)
 
     # zk-prove
     p_zk = subparsers.add_parser("zk-prove", help="Generate Zero-Knowledge safety invariance proof")

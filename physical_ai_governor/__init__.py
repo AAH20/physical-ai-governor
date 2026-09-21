@@ -29,6 +29,7 @@ from .mavlink_frame import (
 )
 from .merkle_blackbox import CompliancePassport, MerkleBlackBoxLedger
 from .qp_solver import ActiveSetQPSolver, QPSolution
+from .incident_reconstructor import ForensicIncidentReport, IncidentReconstructor
 from .rbb_contract import (
     compute_rbb_digest,
     validate_rbb_event,
@@ -53,7 +54,16 @@ from .swarm_cbf import (
 )
 from .telemetry_ingest import RobotTelemetryPacket, TelemetryIngestor
 from .telemetry_stream import TelemetryStreamServer
+from .vla_adversarial_guard import (
+    VLAAdversarialGuard,
+    VLAAnomalyReport,
+    VLAUncertaintyMetric,
+)
 from .vla_validator import VLAActionHorizonValidator, VLAChunkValidationResult
+from .whole_body_kinodynamics import (
+    KinodynamicSafetyState,
+    WholeBodyKinodynamicsGovernor,
+)
 from .zk_proof import ZKSafetyProofEnvelope, ZKSafetyProver
 
 __all__ = [
@@ -85,9 +95,18 @@ __all__ = [
     # Optimization
     "ActiveSetQPSolver",
     "QPSolution",
-    # VLA
+    # VLA & Adversarial Guards
     "VLAActionHorizonValidator",
     "VLAChunkValidationResult",
+    "VLAAdversarialGuard",
+    "VLAAnomalyReport",
+    "VLAUncertaintyMetric",
+    # Whole-Body Kinodynamics
+    "WholeBodyKinodynamicsGovernor",
+    "KinodynamicSafetyState",
+    # Incident Forensics
+    "IncidentReconstructor",
+    "ForensicIncidentReport",
     # Ledger & Passports
     "MerkleBlackBoxLedger",
     "CompliancePassport",

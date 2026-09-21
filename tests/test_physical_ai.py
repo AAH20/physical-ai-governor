@@ -584,6 +584,104 @@ class TestPhysicalAIGovernor(unittest.TestCase):
             ret_ver = main(["rbb-verify", "--bundle", bundle_dir, "--json"])
             self.assertEqual(ret_ver, 0)
 
+            ret_inc = main(["incident-report", "--bundle", bundle_dir, "--json"])
+            self.assertEqual(ret_inc, 0)
+
+        ret_kino = main(["kinodynamics-eval", "--joint1", "0.5", "--joint2", "0.4", "--joint3", "-0.2"])
+        self.assertEqual(ret_kino, 0)
+
+    def test_vla_adversarial_guard_and_uncertainty_inflation(self) -> None:
+        """Verifies dynamic barrier distance expansion and high-jerk adversarial smoothing."""
+        from physical_ai_governor.vla_adversarial_guard import (
+            VLAAdversarialGuard,
+            VLAUncertaintyMetric,
+        )
+
+        guard = VLAAdversarialGuard(base_min_human_distance_m=1.50)
+
+        # 1. Uncertainty barrier inflation
+        high_unc = VLAUncertaintyMetric(epistemic_variance=0.8, perceptual_noise_ratio=0.7, ood_detection_score=0.9)
+        d_inflated = guard.compute_dynamic_barrier_distance(high_unc.composite_uncertainty)
+        self.assertGreater(d_inflated, 1.50)
+        self.assertLessEqual(d_inflated, 1.50 * 2.5)
+
+        # 2. Adversarial action chunk with extreme torque rate & jerk spikes
+        curr_torques = [10.0, -10.0]
+        # Spike from 10 to 200 in 0.05s -> rate = 3800 Nm/s >> 300 Nm/s
+        adversarial_chunk = [
+            [200.0, -200.0],
+            [-180.0, 190.0],
+            [150.0, -150.0],
+        ]
+        report = guard.evaluate_and_filter_chunk(
+            current_torques=curr_torques,
+            action_chunk=adversarial_chunk,
+            dt_step_s=0.05,
+            uncertainty=high_unc,
+        )
+        self.assertFalse(report.is_safe)
+        self.assertGreater(len(report.adversarial_flags), 0)
+        self.assertLessEqual(report.safe_action_chunk[0][0], 10.0 + (300.0 * 0.05) + 0.1)
+
+    def test_whole_body_kinodynamics_and_singularity_avoidance(self) -> None:
+        """Verifies Yoshikawa manipulability barrier and self-collision velocity clamping."""
+        from physical_ai_governor.whole_body_kinodynamics import WholeBodyKinodynamicsGovernor
+
+        gov = WholeBodyKinodynamicsGovernor(min_manipulability=0.05, min_self_collision_distance_m=0.15)
+
+        # 1. Normal safe posture
+        safe_links = {
+            "left_hand": (0.3, 0.2, 0.8),
+            "right_hand": (0.3, -0.2, 0.8),
+            "torso": (0.0, 0.0, 0.8),
+        }
+        res_safe = gov.evaluate_whole_body_safety(safe_links, [0.4, 0.3, 0.2], [1.0, -1.0, 0.5])
+        self.assertTrue(res_safe.is_safe)
+        self.assertGreater(res_safe.manipulability_index, 0.05)
+
+        # 2. Self-collision proximity: hands nearly touching (dist = 0.05m < 0.15m)
+        colliding_links = {
+            "left_hand": (0.3, 0.02, 0.8),
+            "right_hand": (0.3, -0.03, 0.8),
+            "torso": (0.0, 0.0, 0.8),
+        }
+        res_col = gov.evaluate_whole_body_safety(colliding_links, [0.4, 0.3, 0.2], [1.0, -1.0, 0.5])
+        self.assertFalse(res_col.is_safe)
+        self.assertIn("SELF_COLLISION_BREACH", res_col.interventions[0])
+        self.assertEqual(res_col.filtered_joint_velocities, [0.0, 0.0, 0.0])
+
+    def test_incident_reconstructor_ledger_and_bundle(self) -> None:
+        """Verifies forensic incident reconstruction and statutory causality analysis."""
+        from physical_ai_governor.incident_reconstructor import IncidentReconstructor
+
+        # Seed records into blackbox ledger with an intervention
+        pkt_safe = self.ingestor.parse_humanoid_joint_state("r1", 1000, (0, 0, 1), (0, 0, 0), [10], [10], 3.0, 90)
+        dec_safe = self.filter.evaluate_safety(pkt_safe)
+        self.blackbox.append_record(pkt_safe, dec_safe)
+
+        pkt_hazard = self.ingestor.parse_humanoid_joint_state("r1", 2000, (0, 0, 1), (0, 0, 0), [10], [180], 0.8, 90)
+        dec_hazard = self.filter.evaluate_safety(pkt_hazard)
+        self.blackbox.append_record(pkt_hazard, dec_hazard)
+
+        report = IncidentReconstructor.reconstruct_from_ledger(self.blackbox, robot_id="r1")
+        self.assertEqual(report.robot_id, "r1")
+        self.assertGreater(report.interventions_detected, 0)
+        self.assertIn("CRITICAL_HUMAN_PROXIMITY_INTRUSION", report.incident_severity)
+        self.assertGreater(len(report.causality_tree), 0)
+        self.assertGreater(len(report.regulatory_statutory_findings), 0)
+
+    def test_incident_reconstructor_empty_ledger(self) -> None:
+        """Verifies incident reconstruction handling of empty black-box ledger."""
+        from physical_ai_governor.incident_reconstructor import IncidentReconstructor
+        from physical_ai_governor.merkle_blackbox import MerkleBlackBoxLedger
+
+        empty_ledger = MerkleBlackBoxLedger()
+        report = IncidentReconstructor.reconstruct_from_ledger(empty_ledger, robot_id="empty_bot")
+        self.assertEqual(report.robot_id, "empty_bot")
+        self.assertEqual(report.incident_severity, "NONE")
+        self.assertEqual(report.total_cycles_analyzed, 0)
+        self.assertEqual(report.interventions_detected, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

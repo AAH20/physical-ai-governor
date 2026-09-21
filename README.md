@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://python.org)
 [![Dependencies: Zero](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-blueviolet.svg)](#-key-highlights)
-[![Tests: 26/26 Passing](https://img.shields.io/badge/Tests-26%2F26%20Passing-success.svg)](#-benchmark-verification)
+[![Tests: 30/30 Passing](https://img.shields.io/badge/Tests-30%2F30%20Passing-success.svg)](#-benchmark-verification)
 [![Black Box: RBB Contract](https://img.shields.io/badge/Black%20Box-RBB%20Contract%20(v0.1.0)-blue.svg)](https://github.com/AAH20/robot-black-box)
 [![Chassis: GRC Claw](https://img.shields.io/badge/Chassis-GRC%20Claw%20(ISO%2042001)-orange.svg)](https://github.com/AAH20/GRC_Claw)
 [![Assurance Hub: A2Z SOC](https://img.shields.io/badge/Assurance-A2Z%20SOC%20Physical%20AI-informational.svg)](https://a2zsoc.com/physical-ai-humanoid-assurance)
@@ -224,6 +224,20 @@ $$h_{ij}(\mathbf{p}_i, \mathbf{p}_j) = \|\mathbf{p}_i - \mathbf{p}_j\|^2 - d_{\m
 Under reciprocal velocity dynamics, each agent $i$ adjusts its velocity $\mathbf{v}_i$ symmetrically:
 $$\dot{h}_{ij} = 2(\mathbf{p}_i - \mathbf{p}_j) \cdot (\mathbf{v}_i - \mathbf{v}_j) \ge -\gamma h_{ij}(\mathbf{p}_i, \mathbf{p}_j)$$
 
+### 8. Dynamic Perceptual Uncertainty Barrier Inflation
+When vision inputs suffer degradation (occlusion, blur, low light) or high model epistemic variance $\sigma \in [0, 1]$ is observed, the required safe human separation distance dynamically inflates:
+
+$$\tilde{d}_{\min}(\sigma) = \frac{d_{\min}}{1 - \min(\sigma, 0.60)}$$
+
+Ensuring the humanoid or drone acts with heightened conservativeness during degraded perceptual confidence.
+
+### 9. Whole-Body Kinodynamics & Singularity Avoidance
+- **Yoshikawa Manipulability Barrier**:
+  $$h_{\text{manip}}(q) = \sqrt{\det(J(q) J(q)^T)} - w_{\min} \ge 0$$
+  Guarantees manipulator configurations remain far from kinematic singularities where required joint rates diverge to infinity.
+- **Link-to-Link Self-Collision Avoidance**:
+  $$h_{\text{self}}(\mathbf{p}_a, \mathbf{p}_b) = \|\mathbf{p}_a - \mathbf{p}_b\|^2 - d_{\text{margin}}^2 \ge 0$$
+
 ---
 
 ## 📜 Statutory & Regulatory Mapping
@@ -232,7 +246,7 @@ $$\dot{h}_{ij} = 2(\mathbf{p}_i - \mathbf{p}_j) \cdot (\mathbf{v}_i - \mathbf{v}
 | :--- | :--- | :--- |
 | **GRC_Claw (ISO 42001)** | Clauses 6.1, 8.2, 9.1 (AI Management System) | Native RFC 8785 canonical evidence records, `rbb://` URI schema, and automated AIMS readiness envelopes. |
 | **FAA Part 89** | 14 CFR § 89.305 / § 89.310 (Remote ID Broadcast) | Generates ASTM F3411-22a compliant OpenDroneID broadcast frames (Type 0x1 Location/Vector & Type 0x5 Operator ID). |
-| **EU AI Act** | Annex III, Section 2 & 5 (High-Risk AI Systems) | Automatic JSON-LD technical conformity dossiers, continuous CBF boundary guarantees, and post-market audit trails. |
+| **EU AI Act** | Annex III & Art. 72 (High-Risk Systems & Incidents) | Automated conformity dossiers, post-market incident forensic reports, and continuous CBF boundary guarantees. |
 | **ISO 10218-1 / 2** | Section 5.10 (Collaborative Robot Safety) | Human proximity protective damping, dynamic speed and separation monitoring (SSM), and joint torque limits (PFL). |
 | **ISO/TS 15066** | Collaborative Robots — Biomechanical Limits | Real-time contact force evaluation against statutory pressure and force thresholds across 29 human body regions. |
 
@@ -243,6 +257,10 @@ $$\dot{h}_{ij} = 2(\mathbf{p}_i - \mathbf{p}_j) \cdot (\mathbf{v}_i - \mathbf{v}
 - **Pure Python 3.10+ Standard Library**: Zero external C++ or numerical library dependencies — zero supply-chain attack surface.
 - **Microsecond Execution**: Ingestion and safety evaluation at **>100,000 packets/sec** ($<0.01\text{ ms}$ latency).
 - **Formal QP-CBF & HOCBF**: Mathematical forward invariance and smooth second-order deceleration.
+- **Adversarial VLA Perturbation Guard**: Jerk ($\dddot{q}$) and torque-rate limiting against adversarial prompt injections and hallucinated policy chattering.
+- **Whole-Body Kinodynamics & Singularity Governor**: Yoshikawa manipulability and link-to-link self-collision barriers for humanoid dual-arm manipulators.
+- **Forensic Flight Incident Reconstruction**: Automated root-cause timeline analysis compliant with EU AI Act Article 72 and ISO 12100.
+- **Robot Black Box (RBB) Integration**: Native flight recorder (`1.0.0-local.1`) and offline independent bundle auditor.
 - **Zero-Knowledge (ZK) Safety Proofs**: Non-interactive Fiat-Shamir invariance verification without revealing secret coordinates.
 - **Hardware TPM 2.0 Silicon Attestation**: PCR 10/11/12 code & policy sealing for edge chips (NVIDIA Jetson, Intel NUC).
 - **Swarm Reciprocal CBF**: Decentralized pairwise collision avoidance for multi-agent drone swarms.
@@ -251,7 +269,7 @@ $$\dot{h}_{ij} = 2(\mathbf{p}_i - \mathbf{p}_j) \cdot (\mathbf{v}_i - \mathbf{v}
 - **Forensic Audit & Inclusion Proofs**: Merkle black-box audit ledger with logarithmic inclusion verification.
 - **ISO 10218 Safety State Machine**: Automatic collaborative reduced speed, protective stop, and emergency stop transitions.
 - **GRC_Claw Integration**: Full interoperability with the GRC_Claw evidence plane and ISO 42001 governance engine.
-- **Built-in CLI**: Turnkey commands for benchmarking, ZK proofs, Swarm evaluation, VLA simulation, GRC_Claw sync, and Remote ID.
+- **Built-in CLI**: Turnkey commands for benchmarking, ZK proofs, Swarm evaluation, RBB flight bundles, incident reports, and kinodynamics.
 
 ---
 
@@ -422,6 +440,47 @@ decision, leaf, diag = bridge.process_ros2_cycle(
 print(f"ROS 2 Diagnostic Array Level: {diag['level']}, Message: {diag['message']}")
 ```
 
+### 9. Adversarial VLA Guard & Dynamic Uncertainty Inflation
+
+```python
+from physical_ai_governor import VLAAdversarialGuard, VLAUncertaintyMetric
+
+guard = VLAAdversarialGuard(base_min_human_distance_m=1.50)
+uncertainty = VLAUncertaintyMetric(epistemic_variance=0.75, perceptual_noise_ratio=0.6)
+
+# Evaluates action chunk against actuator jerk limits and perceptual uncertainty
+report = guard.evaluate_and_filter_chunk(
+    current_torques=[15.0, -10.0],
+    action_chunk=[[180.0, -190.0], [210.0, -220.0]],
+    uncertainty=uncertainty,
+)
+print(f"Safe: {report.is_safe}, Inflated Barrier: {report.effective_min_distance_m:.2f} m")
+```
+
+### 10. Whole-Body Kinodynamics & Singularity Governor
+
+```python
+from physical_ai_governor import WholeBodyKinodynamicsGovernor
+
+gov = WholeBodyKinodynamicsGovernor(min_manipulability=0.05, min_self_collision_distance_m=0.15)
+links = {"left_hand": (0.3, 0.2, 0.8), "right_hand": (0.3, -0.2, 0.8), "torso": (0.0, 0.0, 0.8)}
+
+state = gov.evaluate_whole_body_safety(links, joint_angles=[0.4, 0.3, 0.2], commanded_joint_velocities=[1.0, -1.0, 0.5])
+print(f"Feasible: {state.is_safe}, Manipulability w(q): {state.manipulability_index}")
+```
+
+### 11. Automated Forensic Flight Incident Reconstruction
+
+```python
+from physical_ai_governor import IncidentReconstructor
+
+# Parse recorded flight bundle and generate statutory investigation report
+report = IncidentReconstructor.reconstruct_from_rbb_bundle("./rbb_bundle")
+print(f"Incident Severity: {report.incident_severity}, Root Cause: {report.primary_root_cause}")
+for finding in report.regulatory_statutory_findings:
+    print(f"  ⚖️  {finding}")
+```
+
 ---
 
 ## 💻 CLI Usage
@@ -453,7 +512,13 @@ physical-ai-governor rbb-record --robot-id humanoid_gr00t_01 --cycles 20 --out .
 # 8. Audit and verify an on-disk RBB bundle
 physical-ai-governor rbb-verify --bundle ./rbb_bundle
 
-# 9. Synthesize FAA Part 89 Remote ID broadcast packet
+# 9. Reconstruct and analyze post-market incident from flight bundle
+physical-ai-governor incident-report --bundle ./rbb_bundle
+
+# 10. Evaluate whole-body kinodynamics and Yoshikawa manipulability
+physical-ai-governor kinodynamics-eval --joint1 0.5 --joint2 0.4 --joint3 -0.2
+
+# 11. Synthesize FAA Part 89 Remote ID broadcast packet
 physical-ai-governor remote-id --lat 37.7749 --lon -122.4194 --speed 4.0
 ```
 
@@ -475,6 +540,8 @@ test_grc_claw_canonical_and_evidence_packaging (test_physical_ai.TestPhysicalAIG
 test_grc_claw_rbb_event_stream (test_physical_ai.TestPhysicalAIGovernor.test_grc_claw_rbb_event_stream) ... ok
 test_high_order_control_barrier_filter (test_physical_ai.TestPhysicalAIGovernor.test_high_order_control_barrier_filter) ... ok
 test_humanoid_stability_governor (test_physical_ai.TestPhysicalAIGovernor.test_humanoid_stability_governor) ... ok
+test_incident_reconstructor_empty_ledger (test_physical_ai.TestPhysicalAIGovernor.test_incident_reconstructor_empty_ledger) ... ok
+test_incident_reconstructor_ledger_and_bundle (test_physical_ai.TestPhysicalAIGovernor.test_incident_reconstructor_ledger_and_bundle) ... ok
 test_iso10218_safety_state_machine (test_physical_ai.TestPhysicalAIGovernor.test_iso10218_safety_state_machine) ... ok
 test_mavlink_binary_frame_and_crc (test_physical_ai.TestPhysicalAIGovernor.test_mavlink_binary_frame_and_crc) ... ok
 test_merkle_audit_proof_generation_and_verification (test_physical_ai.TestPhysicalAIGovernor.test_merkle_audit_proof_generation_and_verification) ... ok
@@ -491,10 +558,12 @@ test_telemetry_ingestion_parsers (test_physical_ai.TestPhysicalAIGovernor.test_t
 test_telemetry_stream_server_processing (test_physical_ai.TestPhysicalAIGovernor.test_telemetry_stream_server_processing) ... ok
 test_tpm2_hardware_silicon_attestation (test_physical_ai.TestPhysicalAIGovernor.test_tpm2_hardware_silicon_attestation) ... ok
 test_vla_action_horizon_validator (test_physical_ai.TestPhysicalAIGovernor.test_vla_action_horizon_validator) ... ok
+test_vla_adversarial_guard_and_uncertainty_inflation (test_physical_ai.TestPhysicalAIGovernor.test_vla_adversarial_guard_and_uncertainty_inflation) ... ok
+test_whole_body_kinodynamics_and_singularity_avoidance (test_physical_ai.TestPhysicalAIGovernor.test_whole_body_kinodynamics_and_singularity_avoidance) ... ok
 test_zk_safety_prover_and_verifier (test_physical_ai.TestPhysicalAIGovernor.test_zk_safety_prover_and_verifier) ... ok
 
 ----------------------------------------------------------------------
-Ran 26 tests in 0.049s
+Ran 30 tests in 0.060s
 
 OK
 ```
