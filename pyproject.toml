@@ -34,6 +34,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.scripts]
+physical-ai-governor = "physical_ai_governor.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/AAH20/physical-ai-governor"
 Repository = "https://github.com/AAH20/physical-ai-governor"
