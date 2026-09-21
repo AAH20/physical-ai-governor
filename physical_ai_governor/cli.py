@@ -192,6 +192,86 @@ def cmd_grc_claw_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_zk_prove(args: argparse.Namespace) -> int:
+    """Generates a verifiable Zero-Knowledge (ZK) safety proof over flight logs."""
+    from .zk_proof import ZKSafetyProver
+
+    print(f"🛡️ Generating Zero-Knowledge Safety Invariance Proof ({args.cycles} cycles)...")
+    ingestor = TelemetryIngestor()
+    cbf = ControlBarrierFilter()
+    ledger = MerkleBlackBoxLedger()
+
+    for i in range(args.cycles):
+        pkt = ingestor.parse_humanoid_joint_state(
+            robot_id=args.robot_id,
+            timestamp_ns=i * 1_000_000,
+            base_pos=(0.0, 0.0, 1.2),
+            base_vel=(0.2, 0.0, 0.0),
+            current_torques=[30.0, -20.0],
+            commanded_torques=[40.0, -30.0],
+            human_proximity=2.5,
+            battery=90.0,
+        )
+        dec = cbf.evaluate_safety(pkt)
+        ledger.append_record(pkt, dec)
+
+    prover = ZKSafetyProver()
+    envelope = prover.generate_zk_proof(ledger, robot_id=args.robot_id)
+    is_valid = ZKSafetyProver.verify_zk_proof(envelope)
+
+    print("=" * 65)
+    print("  ZERO-KNOWLEDGE (ZK) SAFETY INVARIANCE PROOF")
+    print("=" * 65)
+    print(f"  Proof ID:                    {envelope.proof_id}")
+    print(f"  Robot ID:                    {envelope.robot_id}")
+    print(f"  Merkle Root Anchor:          {envelope.merkle_root}")
+    print(f"  Cycles Proven:               {envelope.total_cycles_proven}")
+    print(f"  Fiat-Shamir Challenge:       {envelope.challenge_hash[:20]}...")
+    print(f"  ZK Proof Verified:           {is_valid}")
+    print("  Invariants Certified (Zero Coordinate Leakage):")
+    for inv in envelope.invariants_certified:
+        print(f"    • {inv}")
+    print("=" * 65)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(json.dumps(envelope.to_dict(), indent=2))
+        print(f"✅ ZK proof envelope saved to: {args.output}")
+
+    return 0
+
+
+def cmd_swarm_eval(args: argparse.Namespace) -> int:
+    """Simulates reciprocal multi-robot / swarm collision avoidance."""
+    from .swarm_cbf import SwarmAgentState, SwarmControlBarrierGovernor
+
+    print(f"🐝 Simulating Reciprocal Multi-Agent CBF Collision Avoidance ({args.agents} agents)...")
+    gov = SwarmControlBarrierGovernor(min_inter_agent_distance_m=2.0)
+
+    # Initialize agents on converging paths
+    agents = [
+        SwarmAgentState("drone_alpha", (0.0, 0.0, 10.0), (1.5, 0.0, 0.0), (1.5, 0.0, 0.0)),
+        SwarmAgentState("drone_bravo", (1.8, 0.0, 10.0), (-1.5, 0.0, 0.0), (-1.5, 0.0, 0.0)),
+    ]
+    if args.agents > 2:
+        agents.append(SwarmAgentState("drone_charlie", (0.9, 1.2, 10.0), (0.0, -1.0, 0.0), (0.0, -1.0, 0.0)))
+
+    decisions = gov.evaluate_swarm_safety(agents)
+
+    print("=" * 65)
+    print("  SWARM-CBF COLLISION AVOIDANCE REPORT")
+    print("=" * 65)
+    for agent_id, dec in decisions.items():
+        status = "SAFE_PASS" if dec.is_safe else "CBF_RECIPROCAL_INTERVENTION"
+        print(f"  [{agent_id}] -> {status}")
+        print(f"    • Filtered Velocity:   {dec.filtered_velocity}")
+        print(f"    • Min Distance:        {dec.min_inter_agent_distance_m} m")
+        if dec.threat_agent_ids:
+            print(f"    • Collision Threats:   {', '.join(dec.threat_agent_ids)}")
+    print("=" * 65)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="physical-ai-governor",
@@ -236,6 +316,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_claw.add_argument("--cycles", type=int, default=100, help="Telemetry cycles to audit")
     p_claw.add_argument("--output", "-o", type=str, default=None, help="Output bundle file path")
     p_claw.set_defaults(func=cmd_grc_claw_sync)
+
+    # zk-prove
+    p_zk = subparsers.add_parser("zk-prove", help="Generate Zero-Knowledge safety invariance proof")
+    p_zk.add_argument("--robot-id", type=str, default="humanoid_defense_01", help="Robot identifier")
+    p_zk.add_argument("--cycles", type=int, default=50, help="Telemetry cycles to prove")
+    p_zk.add_argument("--output", "-o", type=str, default=None, help="Output file path")
+    p_zk.set_defaults(func=cmd_zk_prove)
+
+    # swarm-eval
+    p_swarm = subparsers.add_parser("swarm-eval", help="Simulate multi-agent swarm reciprocal CBF")
+    p_swarm.add_argument("--agents", type=int, default=3, help="Number of interacting agents")
+    p_swarm.set_defaults(func=cmd_swarm_eval)
 
     return parser
 

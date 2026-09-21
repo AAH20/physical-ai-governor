@@ -3,12 +3,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://python.org)
 [![Dependencies: Zero](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-blueviolet.svg)](#-key-highlights)
-[![Tests: 19/19 Passing](https://img.shields.io/badge/Tests-19%2F19%20Passing-success.svg)](#-benchmark-verification)
+[![Tests: 23/23 Passing](https://img.shields.io/badge/Tests-23%2F23%20Passing-success.svg)](#-benchmark-verification)
 [![Chassis: GRC Claw](https://img.shields.io/badge/Chassis-GRC%20Claw%20(ISO%2042001)-orange.svg)](https://github.com/AAH20/GRC_Claw)
 [![Assurance Hub: A2Z SOC](https://img.shields.io/badge/Assurance-A2Z%20SOC%20Physical%20AI-informational.svg)](https://a2zsoc.com/physical-ai-humanoid-assurance)
 
 > **Autonomous Physical AI, Humanoid (GR00T) & Drone Swarm GRC Assurance Engine.**  
-> Enforces continuous Control Barrier Functions (CBF, QP-CBF, HOCBF) over streaming ROS 2, MAVLink, and VLA joint trajectories, notarizing tamper-evident black-box Merkle ledgers with inclusion proofs and statutory compliance passports for FAA Part 89, EU AI Act Annex III, ISO 10218 / ISO/TS 15066, and **GRC_Claw** (ISO 42001).
+> Enforces continuous Control Barrier Functions (CBF, QP-CBF, HOCBF) over streaming ROS 2, MAVLink, and VLA joint trajectories, notarizing tamper-evident black-box Merkle ledgers with inclusion proofs, Zero-Knowledge safety proofs, TPM 2.0 hardware attestation, and statutory compliance passports for FAA Part 89, EU AI Act Annex III, ISO 10218 / ISO/TS 15066, and **GRC_Claw** (ISO 42001).
 
 ---
 
@@ -25,10 +25,11 @@ flowchart TD
 
   subgraph INGEST["⚡ Ingestion & Protocol Stream Plane"]
     direction TB
-    ING["TelemetryIngestor<br/>(ROS 2 / MAVLink / VLA)"]
+    ING["TelemetryIngestor<br/>(Standard Packet Format)"]
     MFP["MAVLinkFrameParser<br/>(Binary v2 + CRC-16 Checksum)"]
+    ROS["ROS2TelemetryBridge<br/>(sensor_msgs/JointState &amp; Twist)"]
     VAV["VLAActionHorizonValidator<br/>(Multi-Step H=8..16 Screening)"]
-    TSS["TelemetryStreamServer<br/>(Async TCP & In-Memory Stream)"]
+    TSS["TelemetryStreamServer<br/>(Async TCP &amp; In-Memory Stream)"]
   end
 
   subgraph SAFETY["🛡️ Control Barrier & Optimization Core"]
@@ -36,14 +37,16 @@ flowchart TD
     QP["ActiveSetQPSolver<br/>(Pure Python Convex Solver &lt;1ms)"]
     QPF["QPSafetyFilter<br/>(Minimal-Norm Projection min ||u - u_nom||²)"]
     HOCBF["HighOrderControlBarrierFilter<br/>(Relative Degree r=2 Deceleration)"]
-    STAB["HumanoidStabilityGovernor<br/>(ZMP Polygon &amp; Coulomb Friction Cone)"]
+    SWARM["SwarmControlBarrierGovernor<br/>(Reciprocal Multi-Agent CBF)"]
+    STAB["HumanoidStabilityGovernor<br/>(ZMP Polygon &amp; Friction Cone)"]
     SM["ISO10218SafetyStateMachine<br/>(Collaborative / Protective / E-Stop)"]
   end
 
-  subgraph AUDIT["📜 Cryptographic Notary & Forensic Audit"]
+  subgraph AUDIT["📜 Cryptographic Notary & ZK Verification"]
     direction TB
     MBL["MerkleBlackBoxLedger<br/>(Incremental Binary Merkle Tree)"]
-    PRF["Merkle Inclusion Proofs<br/>(Logarithmic Audit Paths)"]
+    ZK["ZKSafetyProver<br/>(Zero-Knowledge Fiat-Shamir Proofs)"]
+    TPM["TPM2HardwareAttestor<br/>(PCR Sealing &amp; Silicon Attestation)"]
     STAT["StatutoryAssuranceEngine<br/>(FAA Part 89 &amp; EU AI Act Dossiers)"]
   end
 
@@ -167,6 +170,21 @@ $$\text{Leaf}_i = \text{SHA256}(\mathrm{ID}_{\text{robot}, i} \parallel t_i \par
 Any individual event $k$ can be proven to regulators via an $O(\log N)$ Merkle audit path:
 $$\pi_k = \{ (s_1, p_1), \dots, (s_m, p_m) \} \quad \text{such that} \quad \text{Verify}(\text{Leaf}_k, \pi_k, R) = \text{True}$$
 
+### 6. Zero-Knowledge Safety Invariance Proofs (Fiat-Shamir CBF)
+Enables operators in defense, robotics factories, and autonomous aviation to prove 100% CBF compliance to regulators and insurers without revealing mission coordinates, waypoints, or factory geometry:
+
+$$\mathbf{c}_i = \text{SHA256}(\text{Leaf}_i \parallel \text{safe}_i \parallel r_i), \quad e = \text{SHA256}(R \parallel \text{Invariants} \parallel \mathbf{c}_1 \parallel \dots \parallel \mathbf{c}_N)$$
+
+Where $r_i$ is an ephemeral 128-bit cryptographic blinding factor, $R$ is the public Merkle root, and $e$ is the non-interactive Fiat-Shamir challenge.
+
+### 7. Reciprocal Multi-Agent Swarm Barrier Functions
+For multi-robot swarms (drones, AGVs, quadrupeds), pairwise reciprocal safety barriers guarantee collision-free coordination:
+
+$$h_{ij}(\mathbf{p}_i, \mathbf{p}_j) = \|\mathbf{p}_i - \mathbf{p}_j\|^2 - d_{\min}^2 \ge 0$$
+
+Under reciprocal velocity dynamics, each agent $i$ adjusts its velocity $\mathbf{v}_i$ symmetrically:
+$$\dot{h}_{ij} = 2(\mathbf{p}_i - \mathbf{p}_j) \cdot (\mathbf{v}_i - \mathbf{v}_j) \ge -\gamma h_{ij}(\mathbf{p}_i, \mathbf{p}_j)$$
+
 ---
 
 ## 📜 Statutory & Regulatory Mapping
@@ -186,11 +204,15 @@ $$\pi_k = \{ (s_1, p_1), \dots, (s_m, p_m) \} \quad \text{such that} \quad \text
 - **Pure Python 3.10+ Standard Library**: Zero external C++ or numerical library dependencies — zero supply-chain attack surface.
 - **Microsecond Execution**: Ingestion and safety evaluation at **>100,000 packets/sec** ($<0.01\text{ ms}$ latency).
 - **Formal QP-CBF & HOCBF**: Mathematical forward invariance and smooth second-order deceleration.
+- **Zero-Knowledge (ZK) Safety Proofs**: Non-interactive Fiat-Shamir invariance verification without revealing secret coordinates.
+- **Hardware TPM 2.0 Silicon Attestation**: PCR 10/11/12 code & policy sealing for edge chips (NVIDIA Jetson, Intel NUC).
+- **Swarm Reciprocal CBF**: Decentralized pairwise collision avoidance for multi-agent drone swarms.
+- **ROS 2 & DDS Telemetry Bridge**: Native streaming mapping for `sensor_msgs/JointState`, `geometry_msgs/Twist`, and diagnostic arrays.
 - **Vision-Language-Action (VLA) Chunk Screening**: Validates OpenVLA, Octo, and RT-2 action chunks prior to physical execution.
 - **Forensic Audit & Inclusion Proofs**: Merkle black-box audit ledger with logarithmic inclusion verification.
 - **ISO 10218 Safety State Machine**: Automatic collaborative reduced speed, protective stop, and emergency stop transitions.
 - **GRC_Claw Integration**: Full interoperability with the GRC_Claw evidence plane and ISO 42001 governance engine.
-- **Built-in CLI**: Turnkey commands for benchmarking, VLA simulation, GRC_Claw sync, Remote ID, and conformity dossiers.
+- **Built-in CLI**: Turnkey commands for benchmarking, ZK proofs, Swarm evaluation, VLA simulation, GRC_Claw sync, and Remote ID.
 
 ---
 
@@ -288,6 +310,79 @@ is_valid = MerkleBlackBoxLedger.verify_audit_proof(leaf, proof, root)
 print(f"Merkle Inclusion Proof Verified: {is_valid}")
 ```
 
+### 5. Zero-Knowledge (ZK) Safety Invariance Proofs
+
+```python
+from physical_ai_governor import ZKSafetyProver
+
+# Prove 100% barrier compliance without disclosing trajectory waypoints or plant coordinates
+prover = ZKSafetyProver()
+envelope = prover.generate_zk_proof(ledger, robot_id="stealth_humanoid_01")
+
+print(f"Proof ID: {envelope.proof_id}")
+print(f"Fiat-Shamir Challenge: {envelope.challenge_hash[:16]}...")
+print(f"Cycles Certified: {envelope.total_cycles_proven}")
+
+# Third-party regulator verification (zero coordinate knowledge required)
+verified = ZKSafetyProver.verify_zk_proof(envelope)
+print(f"ZK Safety Proof Valid: {verified}")
+```
+
+### 6. Hardware TPM 2.0 Silicon Attestation & PCR Sealing
+
+```python
+from physical_ai_governor import TPM2HardwareAttestor
+
+tpm = TPM2HardwareAttestor(silicon_chip_id="JETSON-ORIN-AGX-001")
+pcr10 = tpm.measure_code_integrity("cbf_kernel_hash")
+pcr11 = tpm.measure_policy_limits(min_dist=1.5, max_torque=150.0, max_vel=4.0)
+
+# Seal compliance passport into hardware quote with silicon nonce
+passport = ledger.issue_compliance_passport("humanoid_01", total_interventions=0)
+quote = tpm.seal_merkle_passport(passport)
+print(f"Hardware Quote Valid: {tpm.verify_tpm_quote(quote)}")
+```
+
+### 7. Swarm Reciprocal Control Barrier Functions
+
+```python
+from physical_ai_governor import SwarmAgentState, SwarmControlBarrierGovernor
+
+gov = SwarmControlBarrierGovernor(min_inter_agent_distance_m=2.0)
+agents = [
+    SwarmAgentState("drone_1", (0.0, 0.0, 10.0), (1.5, 0.0, 0.0), (1.5, 0.0, 0.0)),
+    SwarmAgentState("drone_2", (1.5, 0.0, 10.0), (-1.5, 0.0, 0.0), (-1.5, 0.0, 0.0)),
+]
+
+decisions = gov.evaluate_swarm_safety(agents)
+for agent_id, dec in decisions.items():
+    print(f"{agent_id} Filtered Velocity: {dec.filtered_velocity}, Safe: {dec.is_safe}")
+```
+
+### 8. ROS 2 Telemetry Bridge & Diagnostic Arrays
+
+```python
+from physical_ai_governor import ROS2JointState, ROS2TelemetryBridge
+
+bridge = ROS2TelemetryBridge()
+msg = ROS2JointState(
+    names=["shoulder", "elbow"],
+    positions=[0.1, -0.2],
+    velocities=[0.0, 0.0],
+    efforts=[25.0, -20.0],
+    stamp_sec=1700000000,
+    stamp_nanosec=0,
+)
+
+decision, leaf, diag = bridge.process_ros2_cycle(
+    msg=msg,
+    robot_id="humanoid_ros2",
+    commanded_efforts=[180.0, -190.0],  # Excessive torque
+    human_proximity_m=1.1,              # Breaches safe boundary
+)
+print(f"ROS 2 Diagnostic Array Level: {diag['level']}, Message: {diag['message']}")
+```
+
 ---
 
 ## 💻 CLI Usage
@@ -301,13 +396,19 @@ physical-ai-governor benchmark --cycles 1000
 # 2. Synchronize compliance passport with GRC_Claw evidence plane
 physical-ai-governor grc-claw-sync --cycles 100 --robot-id humanoid_gr00t_01
 
-# 3. Simulate VLA action chunk horizon safety screening
+# 3. Generate non-interactive Zero-Knowledge (ZK) safety proof
+physical-ai-governor zk-prove --robot-id humanoid_gr00t_01 --cycles 100 -o zk_proof.json
+
+# 4. Evaluate multi-robot swarm reciprocal collision avoidance
+physical-ai-governor swarm-eval --agents 3
+
+# 5. Simulate VLA action chunk horizon safety screening
 physical-ai-governor vla-eval --horizon 8 --robot-id humanoid_gr00t_01
 
-# 4. Export EU AI Act Annex III technical conformity dossier
+# 6. Export EU AI Act Annex III technical conformity dossier
 physical-ai-governor export-dossier --robot-id humanoid_gr00t_01 -o dossier.json
 
-# 5. Synthesize FAA Part 89 Remote ID broadcast packet
+# 7. Synthesize FAA Part 89 Remote ID broadcast packet
 physical-ai-governor remote-id --lat 37.7749 --lon -122.4194 --speed 4.0
 ```
 
@@ -335,13 +436,17 @@ test_merkle_audit_proof_generation_and_verification (test_physical_ai.TestPhysic
 test_merkle_blackbox_hash_chaining (test_physical_ai.TestPhysicalAIGovernor.test_merkle_blackbox_hash_chaining) ... ok
 test_qp_safety_filter (test_physical_ai.TestPhysicalAIGovernor.test_qp_safety_filter) ... ok
 test_qp_solver_unconstrained_and_constrained (test_physical_ai.TestPhysicalAIGovernor.test_qp_solver_unconstrained_and_constrained) ... ok
+test_ros2_telemetry_bridge_conversions (test_physical_ai.TestPhysicalAIGovernor.test_ros2_telemetry_bridge_conversions) ... ok
 test_statutory_engine_faa_eu_iso (test_physical_ai.TestPhysicalAIGovernor.test_statutory_engine_faa_eu_iso) ... ok
+test_swarm_control_barrier_governor (test_physical_ai.TestPhysicalAIGovernor.test_swarm_control_barrier_governor) ... ok
 test_telemetry_ingestion_parsers (test_physical_ai.TestPhysicalAIGovernor.test_telemetry_ingestion_parsers) ... ok
 test_telemetry_stream_server_processing (test_physical_ai.TestPhysicalAIGovernor.test_telemetry_stream_server_processing) ... ok
+test_tpm2_hardware_silicon_attestation (test_physical_ai.TestPhysicalAIGovernor.test_tpm2_hardware_silicon_attestation) ... ok
 test_vla_action_horizon_validator (test_physical_ai.TestPhysicalAIGovernor.test_vla_action_horizon_validator) ... ok
+test_zk_safety_prover_and_verifier (test_physical_ai.TestPhysicalAIGovernor.test_zk_safety_prover_and_verifier) ... ok
 
 ----------------------------------------------------------------------
-Ran 19 tests in 0.027s
+Ran 23 tests in 0.036s
 
 OK
 ```

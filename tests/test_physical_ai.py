@@ -304,6 +304,12 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         ret_claw = main(["grc-claw-sync", "--cycles", "5"])
         self.assertEqual(ret_claw, 0)
 
+        ret_zk = main(["zk-prove", "--robot-id", "test_bot", "--cycles", "5"])
+        self.assertEqual(ret_zk, 0)
+
+        ret_swarm = main(["swarm-eval", "--agents", "3"])
+        self.assertEqual(ret_swarm, 0)
+
     def test_grc_claw_canonical_and_evidence_packaging(self) -> None:
         """Verifies RFC 8785 canonical digest and GRC_Claw EvidenceStore packaging."""
         from physical_ai_governor.grc_claw_bridge import (
@@ -410,6 +416,93 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         self.assertEqual(res["filtered_command"], [150.0])
         self.assertEqual(len(res["leaf_hash"]), 64)
         self.assertEqual(server.total_processed_packets, 1)
+
+    def test_zk_safety_prover_and_verifier(self) -> None:
+        """Verifies zero-knowledge safety invariance proof generation and non-disclosure."""
+        from physical_ai_governor.zk_proof import ZKSafetyProver
+
+        pkt = self.ingestor.parse_humanoid_joint_state(
+            robot_id="stealth_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 1.0),
+            base_vel=(0.0, 0.0, 0.0),
+            current_torques=[10.0],
+            commanded_torques=[10.0],
+            human_proximity=3.5,
+            battery=90.0,
+        )
+        dec = self.filter.evaluate_safety(pkt)
+        self.blackbox.append_record(pkt, dec)
+
+        prover = ZKSafetyProver()
+        envelope = prover.generate_zk_proof(self.blackbox, robot_id="stealth_bot")
+        self.assertEqual(envelope.robot_id, "stealth_bot")
+        self.assertGreater(envelope.total_cycles_proven, 0)
+        self.assertTrue(ZKSafetyProver.verify_zk_proof(envelope))
+
+        # Tampered envelope fails
+        tampered_env = envelope
+        tampered_env.challenge_hash = "0" * 64
+        self.assertFalse(ZKSafetyProver.verify_zk_proof(tampered_env))
+
+    def test_tpm2_hardware_silicon_attestation(self) -> None:
+        """Verifies TPM 2.0 PCR register measurement and hardware quote verification."""
+        from physical_ai_governor.hardware_tpm import TPM2HardwareAttestor
+
+        tpm = TPM2HardwareAttestor(silicon_chip_id="JETSON-ORIN-TEST")
+        pcr10 = tpm.measure_code_integrity("def evaluate_safety(): ...")
+        pcr11 = tpm.measure_policy_limits(1.5, 150.0, 4.0)
+
+        self.assertEqual(len(pcr10), 64)
+        self.assertEqual(len(pcr11), 64)
+
+        passport = self.blackbox.issue_compliance_passport("jetson_bot", total_interventions=0)
+        quote = tpm.seal_merkle_passport(passport)
+
+        self.assertEqual(quote.silicon_chip_id, "JETSON-ORIN-TEST")
+        self.assertTrue(tpm.verify_tpm_quote(quote))
+
+    def test_swarm_control_barrier_governor(self) -> None:
+        """Verifies multi-agent reciprocal pairwise collision avoidance."""
+        from physical_ai_governor.swarm_cbf import (
+            SwarmAgentState,
+            SwarmControlBarrierGovernor,
+        )
+
+        gov = SwarmControlBarrierGovernor(min_inter_agent_distance_m=2.0)
+        agent1 = SwarmAgentState("d1", (0.0, 0.0, 10.0), (1.5, 0.0, 0.0), (1.5, 0.0, 0.0))
+        agent2 = SwarmAgentState("d2", (1.2, 0.0, 10.0), (-1.5, 0.0, 0.0), (-1.5, 0.0, 0.0))
+
+        decisions = gov.evaluate_swarm_safety([agent1, agent2])
+        self.assertTrue(decisions["d1"].intervened)
+        self.assertTrue(decisions["d2"].intervened)
+        self.assertIn("d2", decisions["d1"].threat_agent_ids)
+        self.assertIn("d1", decisions["d2"].threat_agent_ids)
+
+    def test_ros2_telemetry_bridge_conversions(self) -> None:
+        """Verifies ROS 2 JointState message conversions and diagnostic arrays."""
+        from physical_ai_governor.ros2_bridge import ROS2JointState, ROS2TelemetryBridge
+
+        bridge = ROS2TelemetryBridge()
+        msg = ROS2JointState(
+            names=["j1", "j2"],
+            positions=[0.1, -0.2],
+            velocities=[0.0, 0.0],
+            efforts=[25.0, -20.0],
+            stamp_sec=1700000000,
+            stamp_nanosec=100000,
+        )
+
+        decision, leaf, diag = bridge.process_ros2_cycle(
+            msg=msg,
+            robot_id="humanoid_ros2",
+            commanded_efforts=[180.0, -190.0],
+            human_proximity_m=1.0,
+        )
+
+        self.assertFalse(decision.is_safe)
+        self.assertEqual(diag["level"], 1)
+        self.assertEqual(len(leaf), 64)
 
 
 if __name__ == "__main__":
