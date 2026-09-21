@@ -1,6 +1,6 @@
 """
 Robot Black Box (RBB) Contract & Canonical Serialization Engine.
-Fully compliant with https://github.com/AAH20/robot-black-box contract specification:
+Implements bundle structure compatible with the https://github.com/AAH20/robot-black-box contract specification:
     - Schema Version: 1.0.0-local.1
     - RFC 8785 Canonical JSON Serialization
     - Domain Separation: RBB-{domain}-v1\\0

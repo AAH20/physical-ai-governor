@@ -20,6 +20,8 @@ class RobotTelemetryPacket:
     human_distance_meters: float
     battery_percentage: float
     command_torque_input: List[float]
+    human_relative_position_xyz: Optional[Tuple[float, float, float]] = None
+    human_velocity_xyz: Optional[Tuple[float, float, float]] = None
 
 
 class TelemetryIngestor:
@@ -36,6 +38,8 @@ class TelemetryIngestor:
         human_proximity: float,
         battery: float,
         motor_thrusts: List[float],
+        human_relative_position_xyz: Optional[Tuple[float, float, float]] = None,
+        human_velocity_xyz: Optional[Tuple[float, float, float]] = None,
     ) -> RobotTelemetryPacket:
         """Parses MAVLink v2 GPS and flight dynamics."""
         return RobotTelemetryPacket(
@@ -48,6 +52,8 @@ class TelemetryIngestor:
             human_distance_meters=human_proximity,
             battery_percentage=battery,
             command_torque_input=motor_thrusts,
+            human_relative_position_xyz=human_relative_position_xyz,
+            human_velocity_xyz=human_velocity_xyz,
         )
 
     def parse_humanoid_joint_state(
@@ -60,6 +66,8 @@ class TelemetryIngestor:
         commanded_torques: List[float],
         human_proximity: float,
         battery: float,
+        human_relative_position_xyz: Optional[Tuple[float, float, float]] = None,
+        human_velocity_xyz: Optional[Tuple[float, float, float]] = None,
     ) -> RobotTelemetryPacket:
         """Parses ROS 2 / VLA (Vision-Language-Action) joint trajectory frames."""
         return RobotTelemetryPacket(
@@ -72,4 +80,6 @@ class TelemetryIngestor:
             human_distance_meters=human_proximity,
             battery_percentage=battery,
             command_torque_input=commanded_torques,
+            human_relative_position_xyz=human_relative_position_xyz,
+            human_velocity_xyz=human_velocity_xyz,
         )

@@ -246,8 +246,12 @@ class RobotBlackBoxVerifier:
             manifest_body = {k: v for k, v in manifest.items() if k != "authentication"}
             recomputed_manifest_digest = sha256_hex(canonical_json(manifest_body).encode("utf-8"))
 
-            manifest_auth = manifest.get("authentication", {})
-            if manifest_auth:
+            manifest_auth = manifest.get("authentication")
+            if not manifest_auth or not isinstance(manifest_auth, dict) or not manifest_auth.get("signature") or not manifest_auth.get("event_digest") or not manifest_auth.get("key_id"):
+                errors.append(
+                    "MANIFEST_AUTHENTICATION_MISSING: manifest.json is missing required authentication object with key_id, event_digest, and signature."
+                )
+            else:
                 auth_manifest_digest = manifest_auth.get("event_digest", "")
                 if recomputed_manifest_digest != auth_manifest_digest:
                     errors.append(
@@ -401,6 +405,15 @@ class RobotBlackBoxVerifier:
                 checks_passed.append("checkpoints_json_digest_matched")
 
             checkpoints = json.loads(cp_bytes)
+            if not isinstance(checkpoints, list):
+                errors.append("checkpoints.json must contain a JSON array")
+                checkpoints = []
+
+            if norm_mode == "AUTHENTICATED" and len(checkpoints) == 0:
+                errors.append(
+                    "WITNESS_EVIDENCE_REQUIRED: At least one authenticated checkpoint and witness receipt is required for AUTHENTICATED trust mode."
+                )
+
             prior_cp_digest = ZERO
             for j, cp_item in enumerate(checkpoints):
                 cp = cp_item.get("checkpoint", {})
@@ -470,7 +483,7 @@ class RobotBlackBoxVerifier:
 
                 prior_cp_digest = cp_auth_digest
 
-            if not any("Checkpoint" in err for err in errors):
+            if len(checkpoints) > 0 and not any("Checkpoint" in err for err in errors):
                 checks_passed.append("checkpoints_chain_valid")
 
             # 8. Witness Latest-Heads Verification
@@ -480,14 +493,54 @@ class RobotBlackBoxVerifier:
                 errors.append(f"witness/latest-heads.json missing record for run_id: {run_id}")
             else:
                 head_receipt = heads[run_id]
+                # Recompute head receipt body digest
+                head_receipt_body = {k: v for k, v in head_receipt.items() if k != "authentication"}
+                recomputed_hr_digest = sha256_hex(canonical_json(head_receipt_body).encode("utf-8"))
+                hr_auth = head_receipt.get("authentication", {})
+                hr_auth_digest = hr_auth.get("event_digest", "")
+
+                if recomputed_hr_digest != hr_auth_digest:
+                    errors.append("Witness latest-heads body digest mismatch (WITNESS_HEAD_TAMPERED)")
+
                 if head_receipt.get("head_digest") != manifest_head_digest:
                     errors.append("Witness latest head_digest does not match manifest head_digest")
-                else:
-                    if norm_mode == "AUTHENTICATED":
-                        checks_passed.append("witness_consensus_head_verified")
-                        checks_passed.append("external_cryptographic_signatures_authenticated")
+
+                # Bind latest-heads to latest checkpoint receipt
+                if checkpoints:
+                    last_cp_receipt = checkpoints[-1].get("receipt", {})
+                    if head_receipt.get("checkpoint_digest") != last_cp_receipt.get("checkpoint_digest"):
+                        errors.append("Witness latest-heads checkpoint_digest does not bind to latest checkpoint receipt")
+                    if hr_auth_digest != last_cp_receipt.get("authentication", {}).get("event_digest"):
+                        errors.append("Witness latest-heads receipt digest does not match latest checkpoint receipt")
+                elif norm_mode == "AUTHENTICATED":
+                    errors.append("WITNESS_EVIDENCE_REQUIRED: No verified checkpoint receipt available to bind witness latest-heads.")
+
+                # In AUTHENTICATED mode, cryptographically verify the latest-head receipt signature against trusted witness
+                if norm_mode == "AUTHENTICATED":
+                    hr_key_id = hr_auth.get("key_id", "")
+                    if not hr_key_id or not hr_auth.get("signature"):
+                        errors.append("Witness latest-heads receipt is missing authentication credentials")
                     else:
-                        checks_passed.append("internal_witness_latest_head_matched")
+                        m_key_id = manifest.get("authentication", {}).get("key_id", "")
+                        if hr_key_id == m_key_id and not allow_self_witness:
+                            errors.append(
+                                f"INDEPENDENT_WITNESS_REQUIRED: Witness latest-heads signed with producer key '{hr_key_id}'. "
+                                "Witness must possess an independent key identity."
+                            )
+
+                        hr_sec = trusted_witnesses.get(hr_key_id) or trusted_witnesses.get("_fallback_")
+                        if not hr_sec:
+                            errors.append(f"Witness latest-heads signed by untrusted witness key_id: '{hr_key_id}'")
+                        else:
+                            hr_sig = hr_auth.get("signature", "")
+                            if not _verify_hmac_sig(hr_sec, DOMAINS["WITNESS"], hr_auth_digest, hr_sig):
+                                errors.append("Witness latest-heads signature verification failed against external trusted key (WITNESS_SIGNATURE_INVALID)")
+                            elif len(checkpoints) > 0 and not any("Checkpoint" in err or "WITNESS" in err for err in errors):
+                                checks_passed.append("witness_latest_heads_signature_authenticated")
+                                checks_passed.append("witness_consensus_head_verified")
+                                checks_passed.append("external_cryptographic_signatures_authenticated")
+                else:
+                    checks_passed.append("internal_witness_latest_head_matched")
 
         except Exception as exc:
             errors.append(f"Checkpoints/witness verification failed: {exc}")

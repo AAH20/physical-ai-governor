@@ -219,7 +219,7 @@ $$L_{\mathbf{g}} h(\mathbf{x})\mathbf{u} \ge -L_{\mathbf{f}} h(\mathbf{x}) - \ga
 
 $$\min_{\mathbf{u} \in \mathcal{U}} \frac{1}{2} \|\mathbf{u} - \mathbf{u}_{\text{nom}}\|^2 \quad \text{subject to} \quad \mathbf{A}_{\text{cbf}} \mathbf{u} \le \mathbf{b}_{\text{cbf}}, \quad -\boldsymbol{\tau}_{\max} \le \mathbf{u} \le \boldsymbol{\tau}_{\max}$$
 
-where $\mathbf{A}_{\text{cbf}} = -L_{\mathbf{g}} h(\mathbf{x})$ and $\mathbf{b}_{\text{cbf}} = L_{\mathbf{f}} h(\mathbf{x}) + \gamma h(\mathbf{x})$. Solved deterministically via the built-in `ActiveSetQPSolver`. Infeasible constraints engage a protective stop ($[0.0] * n$).
+where $\mathbf{A}_{\text{cbf}} = -L_{\mathbf{g}} h(\mathbf{x})$ and $\mathbf{b}_{\text{cbf}} = L_{\mathbf{f}} h(\mathbf{x}) + \gamma h(\mathbf{x})$. Solved deterministically via the built-in `ActiveSetQPSolver`. Infeasible constraints engage a simulated protective stop ($[0.0] * n$) for software-in-the-loop (SIL) evaluation.
 
 ### 3. High-Order CBFs (HOCBF) for Relative Degree $r=2$
 For dynamic systems where actuator commands control acceleration or torque:
@@ -248,7 +248,7 @@ $$\mathbf{c}_i = \text{SHA256}(\text{Leaf}_i \parallel \text{safe}_i \parallel r
 Where $r_i$ is an ephemeral 128-bit blinding factor, $R$ is the public Merkle root, and $e$ is the Fiat-Shamir challenge.
 
 ### 7. Reciprocal Multi-Agent Swarm Barrier Functions
-For multi-robot swarms (drones, AGVs, quadrupeds), pairwise reciprocal safety barriers enforce collision-free coordination:
+For multi-robot swarms (drones, AGVs, quadrupeds), pairwise reciprocal safety barriers encourage separation between neighboring units:
 
 $$h_{ij}(\mathbf{p}_i, \mathbf{p}_j) = \|\mathbf{p}_i - \mathbf{p}_j\|^2 - d_{\min}^2 \ge 0, \quad \dot{h}_{ij} = 2(\mathbf{p}_i - \mathbf{p}_j) \cdot (\mathbf{v}_i - \mathbf{v}_j) \ge -\gamma h_{ij}$$
 
@@ -264,10 +264,8 @@ $$\tilde{d}_{\min}(\sigma) = \frac{d_{\min}}{1 - \min(\sigma, 0.60)}$$
 | Standard / Regulation | Statutory Clause | Physical AI Governor Enforcement Mechanism |
 | :--- | :--- | :--- |
 | **GRC_Claw (ISO 42001)** | Clauses 6.1, 8.2, 9.1 (AI Management System) | Native RFC 8785 canonical evidence records, `rbb://` URI schema, and automated AIMS readiness envelopes. |
-| **FAA Part 89** | 14 CFR § 89.305 / § 89.310 (Remote ID Broadcast) | Generates ASTM F3411-22a compliant OpenDroneID broadcast frames (Type 0x1 Location/Vector & Type 0x5 Operator ID). Evidence status `FAA_MOC_DOC_REQUIRED`. |
+| **FAA Part 89** | 14 CFR § 89.305 / § 89.310 (Remote ID Broadcast) | Generates open-format OpenDroneID-shaped broadcast frames (Type 0x1 Location/Vector & Type 0x5 Operator ID). Evidence status `FAA_MOC_DOC_REQUIRED`. |
 | **EU AI Act** | Art. 6(1) Machinery Reg. & Annex III (High-Risk AI) | Automated technical dossiers, incident timeline forensic analysis, and continuous CBF interventions. Evidence status `CONTROL_EVIDENCE_GENERATED`. |
-| **ISO 10218-1 / 2** | Section 5.10 (Collaborative Robot Safety) | Human proximity protective damping, dynamic speed & separation monitoring (SSM), and joint torque limits (PFL). Evidence status `SYNTHETIC_TEST_PASSED`. |
-| **ISO/TS 15066** | Collaborative Robots — Biomechanical Limits | Real-time contact force evaluation against statutory pressure and force thresholds across human body regions. |
 | **ISO 10218-1 / 2** | Section 5.10 (Collaborative Robot Safety) | Human proximity protective damping, dynamic speed & separation monitoring (SSM), and joint torque limits (PFL). Evidence status `SYNTHETIC_TEST_PASSED`. |
 | **ISO/TS 15066** | Collaborative Robots — Biomechanical Limits | Real-time contact force evaluation against statutory pressure and force thresholds across human body regions. |
 
@@ -275,14 +273,14 @@ $$\tilde{d}_{\min}(\sigma) = \frac{d_{\min}}{1 - \min(\sigma, 0.60)}$$
 
 ## ⚡ Key Highlights
 
-- **Pure Python 3.10+ Standard Library**: Zero external C++ or numerical library dependencies — zero supply-chain attack surface.
+- **Pure Python 3.10+ Standard Library**: Zero external C++ or numerical library dependencies — minimal runtime package footprint.
 - **Microsecond Execution**: Ingestion and safety evaluation at **>100,000 packets/sec** ($<0.01\text{ ms}$ latency).
-- **Formal QP-CBF with Control Matrix $\mathbf{g}$**: Mathematical forward invariance and smooth second-order deceleration.
-- **Watertight RBB Offline Verifier**: Recalculates event body digests and manifest digests, detecting payload mutations (e.g. `UNAUTHORIZED_CHANGED_SCOPE`).
+- **Formal QP-CBF with Control Matrix $\mathbf{g}$**: Minimal-deviation quadratic programming interventions with simulated forward invariance constraints and smooth second-order deceleration.
+- **RBB Offline Verifier**: Recalculates event body digests and manifest digests, detecting payload mutations (e.g. `UNAUTHORIZED_CHANGED_SCOPE`).
 - **Multi-Cycle ROS 2 Telemetry Bridge**: Continuous streaming without state corruption for `sensor_msgs/JointState` and diagnostic arrays.
 - **Adversarial VLA Perturbation Guard**: Jerk ($\dddot{q}$) and torque-rate limiting against adversarial prompt injections and hallucinated policy chattering.
 - **Whole-Body Kinodynamics Governor**: Yoshikawa manipulability and link-to-link self-collision barriers for humanoid dual-arm manipulators.
-- **Forensic Flight Incident Reconstruction**: Automated root-cause timeline analysis compliant with EU AI Act Article 72 and ISO 12100.
+- **Forensic Flight Incident Reconstruction**: Automated root-cause timeline analysis mapping incident traces to EU AI Act Article 72 and ISO 12100 reporting templates.
 - **Blinded Privacy Commitment Prover**: Fiat-Shamir invariance verification without revealing secret coordinates.
 - **Simulated TPM 2.0 PCR Attestation**: Software reference mock of PCR 10/11/12 code and policy sealing for edge deployment.
 - **Swarm Reciprocal CBF**: Decentralized pairwise collision avoidance for multi-agent drone swarms.

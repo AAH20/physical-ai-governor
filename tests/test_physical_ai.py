@@ -1013,6 +1013,282 @@ class TestPhysicalAIGovernor(unittest.TestCase):
         self.assertEqual(report.total_cycles_analyzed, 0)
         self.assertEqual(report.interventions_detected, 0)
 
+    def test_rbb_verifier_rejects_unsigned_manifest(self) -> None:
+        """
+        Adversarial audit gap 1 check:
+        Verifies that RobotBlackBoxVerifier fails closed in AUTHENTICATED mode
+        if the manifest authentication block is stripped or missing.
+        """
+        import tempfile
+        from physical_ai_governor.rbb_recorder import RobotBlackBoxRecorder
+        from physical_ai_governor.rbb_verifier import RobotBlackBoxVerifier
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/unsigned_manifest_bundle"
+            recorder = RobotBlackBoxRecorder(robot_id="manifest_strip_bot", tenant_ref="tenant-test")
+            recorder.start_run(task="delivery")
+            pkt = self.ingestor.parse_humanoid_joint_state(
+                robot_id="manifest_strip_bot",
+                timestamp_ns=1000,
+                base_pos=(0.0, 0.0, 1.0),
+                base_vel=(0.0, 0.0, 0.0),
+                current_torques=[10.0],
+                commanded_torques=[10.0],
+                human_proximity=2.5,
+                battery=90.0,
+            )
+            dec = self.filter.evaluate_safety(pkt)
+            recorder.record_safety_cycle(pkt, dec)
+            recorder.close_run()
+            recorder.export_bundle(bundle_dir)
+
+            # Strip authentication from manifest.json
+            manifest_path = pathlib.Path(bundle_dir) / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest.pop("authentication", None)
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+
+            report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=recorder.get_trusted_keys(),
+            )
+            self.assertFalse(report.is_valid)
+            self.assertFalse(report.is_authenticated)
+            self.assertTrue(any("MANIFEST_AUTHENTICATION_MISSING" in e for e in report.errors))
+
+    def test_rbb_verifier_rejects_empty_checkpoints_bypass(self) -> None:
+        """
+        Adversarial audit gap 2 check:
+        Verifies that stripping checkpoints (checkpoints.json = []) fails closed
+        in AUTHENTICATED mode with WITNESS_EVIDENCE_REQUIRED.
+        """
+        import tempfile
+        from physical_ai_governor.rbb_contract import canonical_json, sha256_hex
+        from physical_ai_governor.rbb_recorder import RobotBlackBoxRecorder
+        from physical_ai_governor.rbb_verifier import RobotBlackBoxVerifier
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/empty_checkpoints_bundle"
+            recorder = RobotBlackBoxRecorder(robot_id="witness_strip_bot", tenant_ref="tenant-test")
+            recorder.start_run(task="patrol")
+            pkt = self.ingestor.parse_humanoid_joint_state(
+                robot_id="witness_strip_bot",
+                timestamp_ns=1000,
+                base_pos=(0.0, 0.0, 1.0),
+                base_vel=(0.0, 0.0, 0.0),
+                current_torques=[10.0],
+                commanded_torques=[10.0],
+                human_proximity=2.5,
+                battery=90.0,
+            )
+            dec = self.filter.evaluate_safety(pkt)
+            recorder.record_safety_cycle(pkt, dec)
+            recorder.close_run()
+            recorder.export_bundle(bundle_dir)
+
+            # Empty checkpoints.json and update its manifest digest
+            checkpoints_path = pathlib.Path(bundle_dir) / "checkpoints.json"
+            checkpoints_path.write_text("[]")
+            empty_cp_digest = sha256_hex(b"[]")
+
+            manifest_path = pathlib.Path(bundle_dir) / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            for item in manifest.get("files", []):
+                if item.get("path") == "checkpoints.json":
+                    item["digest"] = empty_cp_digest
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+
+            report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=recorder.get_trusted_keys(),
+            )
+            self.assertFalse(report.is_valid)
+            self.assertFalse(report.is_authenticated)
+            self.assertTrue(any("WITNESS_EVIDENCE_REQUIRED" in e or "WITNESS_DIGEST_MISMATCH" in e for e in report.errors))
+
+    def test_rbb_verifier_validates_and_authenticates_latest_heads(self) -> None:
+        """
+        Adversarial audit gap 2 check:
+        Verifies that latest-heads.json signature is cryptographically verified against
+        trusted witnesses and correctly bound to the checkpoint chain.
+        """
+        import tempfile
+        from physical_ai_governor.rbb_recorder import RobotBlackBoxRecorder
+        from physical_ai_governor.rbb_verifier import RobotBlackBoxVerifier
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_dir = f"{tmp_dir}/latest_heads_bundle"
+            recorder = RobotBlackBoxRecorder(robot_id="heads_bot", tenant_ref="tenant-test")
+            recorder.start_run(task="surveillance")
+            pkt = self.ingestor.parse_humanoid_joint_state(
+                robot_id="heads_bot",
+                timestamp_ns=1000,
+                base_pos=(0.0, 0.0, 1.0),
+                base_vel=(0.0, 0.0, 0.0),
+                current_torques=[10.0],
+                commanded_torques=[10.0],
+                human_proximity=2.5,
+                battery=90.0,
+            )
+            dec = self.filter.evaluate_safety(pkt)
+            recorder.record_safety_cycle(pkt, dec)
+            recorder.close_run()
+            recorder.export_bundle(bundle_dir)
+
+            trusted_keys = recorder.get_trusted_keys()
+            report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=trusted_keys,
+            )
+            self.assertTrue(report.is_valid)
+            self.assertTrue(report.is_authenticated)
+            self.assertIn("witness_latest_heads_signature_authenticated", report.checks_passed)
+
+            # Tampering with latest-heads signature fails closed
+            heads_path = pathlib.Path(bundle_dir) / "witness" / "latest-heads.json"
+            heads_data = json.loads(heads_path.read_text())
+            run_key = list(heads_data.keys())[0]
+            heads_data[run_key]["authentication"]["signature"] = "deadbeef" * 8
+            heads_path.write_text(json.dumps(heads_data, indent=2))
+
+            tampered_report = RobotBlackBoxVerifier.verify_bundle(
+                bundle_dir,
+                trust_mode="AUTHENTICATED",
+                external_trusted_keys=trusted_keys,
+            )
+            self.assertFalse(tampered_report.is_valid)
+            self.assertTrue(any("WITNESS_SIGNATURE_INVALID" in e for e in tampered_report.errors))
+
+    def test_blinded_commitment_rejects_fabricated_claims_and_verifies_opening(self) -> None:
+        """
+        Adversarial audit gap 3 check:
+        Verifies that fabricated invariant strings are rejected, and that
+        individual cycle compliance is verified via opening proofs.
+        """
+        import hashlib
+        from physical_ai_governor.zk_proof import BlindedSafetyProver
+
+        pkt = self.ingestor.parse_humanoid_joint_state("r1", 1000, (0, 0, 1), (0, 0, 0), [10], [10], 2.5, 90)
+        dec = self.filter.evaluate_safety(pkt)
+        self.blackbox.append_record(pkt, dec)
+
+        prover = BlindedSafetyProver()
+        env = prover.generate_blinded_envelope(self.blackbox, robot_id="r1")
+        self.assertTrue(prover.verify_blinded_envelope(env))
+
+        # Fabricated invariant claim must be rejected
+        env.invariants_certified = ["I certify anything without constraints"]
+        fiat_shamir = f"{env.merkle_root}:{','.join(env.invariants_certified)}:{''.join(env.blinded_commitments)}".encode()
+        env.challenge_hash = hashlib.sha256(fiat_shamir).hexdigest()
+        self.assertFalse(prover.verify_blinded_envelope(env))
+
+        # Opening proof verification rejects invalid opening
+        self.assertFalse(
+            prover.verify_opening(
+                env,
+                cycle_index=0,
+                leaf_hash="invalid_leaf",
+                is_safe=True,
+                human_proximity=2.5,
+                blinding_factor="invalid_factor",
+            )
+        )
+
+    def test_control_barrier_rejects_non_finite_inputs(self) -> None:
+        """
+        Adversarial audit gap 4 check:
+        Verifies that NaN and Inf in telemetry packet (including position_xyz)
+        are rejected with INVALID_INPUT and trigger fail-safe protective stop.
+        """
+        from physical_ai_governor.control_barrier import ControlBarrierFilter, QPSafetyFilter
+
+        cbf = ControlBarrierFilter()
+        qp = QPSafetyFilter()
+
+        # NaN in position_xyz
+        pkt_nan_pos = self.ingestor.parse_humanoid_joint_state(
+            robot_id="nan_pos_bot",
+            timestamp_ns=1000,
+            base_pos=(float("nan"), 0.0, 1.0),
+            base_vel=(0.0, 0.0, 0.0),
+            current_torques=[10.0, -10.0],
+            commanded_torques=[20.0, -20.0],
+            human_proximity=2.0,
+            battery=90.0,
+        )
+        res_cbf = cbf.evaluate_safety(pkt_nan_pos)
+        self.assertFalse(res_cbf.is_safe)
+        self.assertEqual(res_cbf.decision_status, "INVALID_INPUT")
+        self.assertEqual(res_cbf.filtered_command, [0.0, 0.0])
+
+        res_qp = qp.evaluate_safety_qp(pkt_nan_pos)
+        self.assertFalse(res_qp.is_safe)
+        self.assertEqual(res_qp.decision_status, "INVALID_INPUT")
+        self.assertEqual(res_qp.filtered_command, [0.0, 0.0])
+
+        # Inf in command_torque_input
+        pkt_inf_torque = self.ingestor.parse_humanoid_joint_state(
+            robot_id="inf_bot",
+            timestamp_ns=1000,
+            base_pos=(0.0, 0.0, 1.0),
+            base_vel=(0.0, 0.0, 0.0),
+            current_torques=[10.0, -10.0],
+            commanded_torques=[float("inf"), 10.0],
+            human_proximity=2.0,
+            battery=90.0,
+        )
+        res_inf = cbf.evaluate_safety(pkt_inf_torque)
+        self.assertFalse(res_inf.is_safe)
+        self.assertEqual(res_inf.decision_status, "INVALID_INPUT")
+
+    def test_cbf_directional_relative_human_approach(self) -> None:
+        """
+        Adversarial audit gap 4 check:
+        Verifies that directional Lie derivative L_f h evaluates approach vs retreat
+        with respect to human relative position rather than world origin.
+        """
+        from physical_ai_governor.control_barrier import QPSafetyFilter
+
+        qp = QPSafetyFilter(min_human_distance_m=1.50)
+        control_g = [[-1.0, 0.0]]  # maps u to velocity along relative axis
+
+        # Human is at relative position (1.6, 0.0, 0.0)
+        # Case 1: Robot moving AWAY from human (vel = (-1.0, 0.0, 0.0))
+        pkt_retreat = self.ingestor.parse_humanoid_joint_state(
+            robot_id="retreat_bot",
+            timestamp_ns=1000,
+            base_pos=(100.0, 200.0, 0.0),  # arbitrary world coords far from origin
+            base_vel=(-1.0, 0.0, 0.0),    # retreating away from human
+            current_torques=[10.0, 10.0],
+            commanded_torques=[10.0, 10.0],
+            human_proximity=1.6,
+            battery=90.0,
+            human_relative_position_xyz=(1.6, 0.0, 0.0),
+            human_velocity_xyz=(0.0, 0.0, 0.0),
+        )
+        dec_retreat = qp.evaluate_safety_qp(pkt_retreat, control_matrix_g=control_g)
+
+        # Case 2: Robot moving TOWARD human (vel = (1.0, 0.0, 0.0))
+        pkt_approach = self.ingestor.parse_humanoid_joint_state(
+            robot_id="approach_bot",
+            timestamp_ns=1000,
+            base_pos=(100.0, 200.0, 0.0),  # same world coords
+            base_vel=(1.0, 0.0, 0.0),     # approaching human
+            current_torques=[10.0, 10.0],
+            commanded_torques=[10.0, 10.0],
+            human_proximity=1.6,
+            battery=90.0,
+            human_relative_position_xyz=(1.6, 0.0, 0.0),
+            human_velocity_xyz=(0.0, 0.0, 0.0),
+        )
+        dec_approach = qp.evaluate_safety_qp(pkt_approach, control_matrix_g=control_g)
+
+        # Retreating robot is allowed higher positive command effort than approaching robot
+        self.assertGreater(dec_retreat.filtered_command[0], dec_approach.filtered_command[0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,11 @@ from .qp_solver import ActiveSetQPSolver
 from .telemetry_ingest import RobotTelemetryPacket
 
 
+def _check_finite(val: Any) -> bool:
+    """Validates that a scalar value is a finite number (not NaN or Inf)."""
+    return isinstance(val, (int, float)) and not math.isnan(val) and not math.isinf(val)
+
+
 @dataclass
 class SafetyDecision:
     """Outcome of a real-time Control Barrier Function evaluation."""
@@ -44,6 +49,9 @@ class ControlBarrierFilter:
         h(x) >= 0  (Safety set C)
         dh/dt >= -alpha * h(x)
     If the commanded actuator vector violates the barrier, clamps to the nearest safe projection.
+    Note: The zero-command fallback ([0.0] * n) is a simulated fail-safe fallback intended
+    for software-in-the-loop (SIL) testing; physical robots require hold-position trajectory
+    or mechanical brake engagement.
     """
 
     def __init__(
@@ -65,6 +73,27 @@ class ControlBarrierFilter:
         Evaluates physical barrier constraints and computes safe actuator commands.
         """
         original = packet.command_torque_input
+        n = len(original)
+
+        # Validate finite inputs (guard against NaN / Inf)
+        if (
+            not all(_check_finite(x) for x in original)
+            or not _check_finite(packet.human_distance_meters)
+            or not all(_check_finite(x) for x in packet.velocity_xyz)
+            or not all(_check_finite(x) for x in packet.position_xyz)
+            or (packet.human_relative_position_xyz and not all(_check_finite(x) for x in packet.human_relative_position_xyz))
+            or (packet.human_velocity_xyz and not all(_check_finite(x) for x in packet.human_velocity_xyz))
+        ):
+            return SafetyDecision(
+                is_safe=False,
+                original_command=original,
+                filtered_command=[0.0] * n,
+                cbf_margin=-1.0,
+                intervention_triggered=True,
+                violation_reason="INVALID_INPUT: Non-finite values (NaN/Inf) detected in telemetry packet. Engaged fail-safe protective stop.",
+                decision_status="INVALID_INPUT",
+            )
+
         filtered = list(original)
         intervened = False
         reasons: List[str] = []
@@ -123,6 +152,9 @@ class QPSafetyFilter:
                     -tau_max <= u_i <= tau_max
     Calculates minimal-deviation intervention from AI nominal actions under forward invariance constraints.
     Engages a fail-safe protective stop ([0.0] * n) upon infeasibility or solver failure.
+    Note: The zero-command fallback ([0.0] * n) is a simulated fail-safe fallback intended
+    for software-in-the-loop (SIL) testing; physical robots require hold-position trajectory
+    or mechanical brake engagement.
     """
 
     def __init__(
@@ -161,10 +193,14 @@ class QPSafetyFilter:
             )
 
         # Validate finite inputs (guard against NaN / Inf)
-        def _check_finite(val: float) -> bool:
-            return isinstance(val, (int, float)) and not math.isnan(val) and not math.isinf(val)
-
-        if not all(_check_finite(x) for x in u_nom) or not _check_finite(packet.human_distance_meters) or not all(_check_finite(x) for x in packet.velocity_xyz):
+        if (
+            not all(_check_finite(x) for x in u_nom)
+            or not _check_finite(packet.human_distance_meters)
+            or not all(_check_finite(x) for x in packet.velocity_xyz)
+            or not all(_check_finite(x) for x in packet.position_xyz)
+            or (packet.human_relative_position_xyz and not all(_check_finite(x) for x in packet.human_relative_position_xyz))
+            or (packet.human_velocity_xyz and not all(_check_finite(x) for x in packet.human_velocity_xyz))
+        ):
             return SafetyDecision(
                 is_safe=False,
                 original_command=u_nom,
@@ -191,13 +227,20 @@ class QPSafetyFilter:
         vel_mag = math.sqrt(sum(v * v for v in packet.velocity_xyz))
 
         # Directional relative Lie derivative L_f h(x) = \nabla h(x) \cdot f(x)
-        # If robot position vector is non-zero, calculate radial approach/retreat rate:
-        pos_norm = math.sqrt(sum(p * p for p in packet.position_xyz))
-        if pos_norm > 1e-3:
-            rad_unit = [p / pos_norm for p in packet.position_xyz]
-            # Radial velocity: positive when moving outward/away, negative when approaching
-            drift_lf = sum(r * v for r, v in zip(rad_unit, packet.velocity_xyz))
+        # When relative human position is provided (r_h = p_human - p_robot):
+        # dh/dt = d(||r_h||)/dt = - r_hat . (v_robot - v_human)
+        if packet.human_relative_position_xyz is not None:
+            r_rel = packet.human_relative_position_xyz
+            r_norm = math.sqrt(sum(x * x for x in r_rel))
+            if r_norm > 1e-3:
+                r_hat = [x / r_norm for x in r_rel]
+                v_h = packet.human_velocity_xyz if packet.human_velocity_xyz is not None else (0.0, 0.0, 0.0)
+                v_rel = [vr - vh for vr, vh in zip(packet.velocity_xyz, v_h)]
+                drift_lf = -sum(rh * vr for rh, vr in zip(r_hat, v_rel))
+            else:
+                drift_lf = -vel_mag
         else:
+            # Conservative worst-case approach bound when relative bearing is unavailable
             drift_lf = -vel_mag
 
         # Wire control_matrix_g into Lie derivative CBF constraints:

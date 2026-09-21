@@ -1,8 +1,11 @@
 """
 Robot Black Box (RBB) Streaming Flight Recorder.
-Complies with https://github.com/AAH20/robot-black-box specification.
+Compatible with the https://github.com/AAH20/robot-black-box specification.
 Records streaming Physical AI telemetry and Control Barrier Function (CBF)
 interventions into cryptographically chained, witness-attested .rbb bundles.
+Note: Built-in witness receipt generation simulates an independent witness service
+within the local process for testing and demonstration. Production deployments
+must obtain witness receipts and latest-heads attestations from physically separate witness nodes.
 Pure Python 3.10+ standard library (zero external dependencies).
 """
 
@@ -81,6 +84,14 @@ class RobotBlackBoxRecorder:
                 self.witness_key_id: self.witness_secret.decode("utf-8"),
             },
         }
+
+    def get_trusted_witnesses(self) -> Dict[str, str]:
+        """Returns witness key ID to secret mapping."""
+        return {self.witness_key_id: self.witness_secret.decode("utf-8")}
+
+    def get_trusted_producers(self) -> Dict[str, str]:
+        """Returns producer key ID to secret mapping."""
+        return {self.signing_key_id: self.signing_secret.decode("utf-8")}
 
     def _sign_record(
         self,
